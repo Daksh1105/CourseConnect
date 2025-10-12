@@ -1,58 +1,25 @@
+// src/pages/Login.jsx
 import React, { useEffect, useState } from "react";
+import { auth, db } from "../firebase";
 import { useNavigate } from "react-router-dom";
-
-// Firebase v9 modular SDK
-import { initializeApp } from "firebase/app";
 import {
-  getAuth,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
-
-/*
-  =====> SETUP NOTES <====
-  - You’re using Firebase for authentication and Firestore for storing user roles.
-  - When deploying on Vercel, keep your Firebase config in environment variables
-    (e.g., REACT_APP_FIREBASE_API_KEY) and inject them at build time.
-  - Replace the firebaseConfig values below with your env vars.
-  - Firestore rules should allow reads to `users/{uid}` for authenticated users.
-
-  Expected routes in your React app:
-    - /student-dashboard
-    - /faculty-dashboard
-
-  This component:
-    - Provides login + signup (email/password)
-    - On signup, saves {email, role, createdAt} in `users` collection
-    - On login, reads user's role and redirects accordingly
-    - On mount, redirects authenticated users to their dashboards automatically
-*/
-
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "REPLACE_ME",
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "REPLACE_ME",
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "REPLACE_ME",
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "REPLACE_ME",
-  messagingSenderId:
-    process.env.REACT_APP_FIREBASE_MSG_SENDER_ID || "REPLACE_ME",
-  appId: process.env.REACT_APP_FIREBASE_APP_ID || "REPLACE_ME",
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+import { doc, setDoc, getDoc } from "firebase/firestore";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState("student"); // default role
+  const [name, setName] = useState(""); // ✅ added name
+  const [role, setRole] = useState("student");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isSignupMode, setIsSignupMode] = useState(false); // toggle for showing name field only during signup
 
-  // If user is already logged in, redirect to dashboard
+  // Redirect if already logged in
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) return;
@@ -62,10 +29,9 @@ export default function LoginPage() {
         const userRole = userDoc.exists() ? userDoc.data().role : null;
         if (userRole === "faculty") navigate("/faculty-dashboard");
         else if (userRole === "student") navigate("/student-dashboard");
-        else navigate("/choose-role"); // fallback
       } catch (err) {
         console.error(err);
-        setError("Failed to fetch user role. Check console.");
+        setError("Error checking user role.");
       } finally {
         setLoading(false);
       }
@@ -73,13 +39,20 @@ export default function LoginPage() {
     return () => unsub();
   }, [navigate]);
 
+  // 🔹 Handle Signup
   async function handleSignup(e) {
     e.preventDefault();
     setError("");
+    if (!name.trim()) {
+      setError("Please enter your full name.");
+      return;
+    }
     setLoading(true);
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await setDoc(doc(db, "users", cred.user.uid), {
+        uid: cred.user.uid,
+        name: name.trim(),
         email: cred.user.email,
         role,
         createdAt: new Date().toISOString(),
@@ -94,6 +67,7 @@ export default function LoginPage() {
     }
   }
 
+  // 🔹 Handle Login
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
@@ -101,18 +75,18 @@ export default function LoginPage() {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
       const userDoc = await getDoc(doc(db, "users", cred.user.uid));
-      const userRole = userDoc.exists() ? userDoc.data().role : null;
-      if (!userRole) {
-        setError("No role found for this account. Please contact admin.");
+      const data = userDoc.exists() ? userDoc.data() : null;
+      if (!data) {
+        setError("No user data found. Please sign up first.");
         return;
       }
-      if (userRole !== role) {
+      if (data.role !== role) {
         setError(
-          `Selected role ("${role}") does not match account role ("${userRole}").`
+          `Selected role (“${role}”) does not match account role (“${data.role}”).`
         );
         return;
       }
-      if (userRole === "faculty") navigate("/faculty-dashboard");
+      if (data.role === "faculty") navigate("/faculty-dashboard");
       else navigate("/student-dashboard");
     } catch (err) {
       console.error(err);
@@ -127,10 +101,31 @@ export default function LoginPage() {
       <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8">
         <h1 className="text-2xl font-semibold mb-1">CourseConnect</h1>
         <p className="text-sm text-slate-500 mb-6">
-          Sign in to continue — choose your role below.
+          {isSignupMode
+            ? "Create your account below."
+            : "Sign in to continue — choose your role below."}
         </p>
 
-        <form onSubmit={handleLogin} className="space-y-4">
+        <form
+          onSubmit={isSignupMode ? handleSignup : handleLogin}
+          className="space-y-4"
+        >
+          {isSignupMode && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700">
+                Full Name
+              </label>
+              <input
+                type="text"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 block w-full rounded-lg border-gray-200 shadow-sm p-2"
+                placeholder="John Doe"
+              />
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-slate-700">
               Email
@@ -198,24 +193,25 @@ export default function LoginPage() {
               disabled={loading}
               className="flex-1 py-2 rounded-xl border border-transparent bg-slate-800 text-white font-medium hover:opacity-95"
             >
-              {loading ? "Please wait..." : "Login"}
+              {loading
+                ? "Please wait..."
+                : isSignupMode
+                ? "Sign Up"
+                : "Login"}
             </button>
 
             <button
               type="button"
-              onClick={handleSignup}
+              onClick={() => setIsSignupMode(!isSignupMode)}
               disabled={loading}
               className="flex-1 py-2 rounded-xl border border-slate-200 bg-white text-slate-800 font-medium hover:bg-slate-50"
             >
-              {loading ? "Processing..." : "Sign up"}
+              {isSignupMode
+                ? "Back to Login"
+                : "Create Account"}
             </button>
           </div>
         </form>
-
-        <div className="mt-6 text-xs text-slate-500">
-          Tip: Use environment variables on Vercel instead of committing Firebase
-          credentials.
-        </div>
       </div>
     </div>
   );

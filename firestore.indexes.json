@@ -1,4 +1,21 @@
 {
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionId": "questions",
+      "fields": [
+        { "fieldPath": "classId", "mode": "ASCENDING" },
+        { "fieldPath": "createdAt", "mode": "DESCENDING" }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionId": "resources",
+      "fields": [
+        { "fieldPath": "classId", "mode": "ASCENDING" },
+        { "fieldPath": "uploadedAt", "mode": "DESCENDING" }
+      ],
+      "queryScope": "COLLECTION"
+    }
+  ],
   "fieldOverrides": []
 }
