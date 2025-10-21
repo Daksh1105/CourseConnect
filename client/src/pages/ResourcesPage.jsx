@@ -1,229 +1,290 @@
 import React, { useEffect, useState } from "react";
-import { db, storage, auth } from "../firebase"; // your Firebase config
+import { db, auth, storage } from "../firebase";
 import {
   collection,
-  addDoc,
   getDocs,
+  addDoc,
   doc,
+  getDoc,
   updateDoc,
   increment,
-  getDoc,
 } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Upload, ArrowUp } from "lucide-react";
 
 export default function ResourcesPage() {
-  const [resources, setResources] = useState({
-    syllabus: [],
-    ppts: [],
-    assignments: [],
-    books: [],
-    pyqs: [],
-    materials: [],
-  });
-  const [uploadTitle, setUploadTitle] = useState("");
-  const [uploadFile, setUploadFile] = useState(null);
-  const [user, setUser] = useState(null);
-  const [userRole, setUserRole] = useState(null);
+  const [userRole, setUserRole] = useState("");
+  const [userId, setUserId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [materials, setMaterials] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [materialTitle, setMaterialTitle] = useState("");
+  const [tags, setTags] = useState("");
+  const [file, setFile] = useState(null);
+  const [error, setError] = useState("");
 
-  // Fetch auth user
+  const categories = ["syllabus", "ppts", "assignments", "books", "pyqs"];
+
+  // 🔹 Fetch role from users collection
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (u) => {
-      setUser(u);
-      if (u) {
-        const userDoc = await getDoc(doc(db, "students", u.uid));
-        if (userDoc.exists()) setUserRole(userDoc.data().role);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) return;
+      setLoading(true);
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          setUserRole(userSnap.data().role);
+          setUserId(user.uid);
+        } else {
+          console.warn("User document not found in Firestore!");
+        }
+      } catch (err) {
+        console.error("Error fetching user role:", err);
+        setError("Error fetching user permissions.");
+      } finally {
+        setLoading(false);
       }
     });
-    fetchResources();
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
-  // Fetch all resource categories
-  const fetchResources = async () => {
-    const categories = ["syllabus", "ppts", "assignments", "books", "pyqs", "materials"];
-    const newResources = {};
-    for (const cat of categories) {
-      const snapshot = await getDocs(collection(db, "resources", "classA", cat));
-      newResources[cat] = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+  // 🔹 Fetch student materials
+  useEffect(() => {
+    const fetchMaterials = async () => {
+      try {
+        const colRef = collection(db, "resources", "classA", "studentMaterials");
+        const snapshot = await getDocs(colRef);
+        const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        setMaterials(data);
+      } catch (err) {
+        console.error("Error fetching materials:", err);
+      }
+    };
+    fetchMaterials();
+  }, []);
+
+  // 🔹 Upload file (faculty only for main sections)
+  const uploadResource = async (category) => {
+    if (!file) return alert("Please select a file to upload.");
+    if (userRole !== "faculty")
+      return alert("Only faculty can upload to this section.");
+
+    try {
+      const fileRef = ref(storage, `resources/${category}/${file.name}`);
+      await uploadBytes(fileRef, file);
+      const fileUrl = await getDownloadURL(fileRef);
+
+      await addDoc(collection(db, "resources", "classA", category), {
+        title: file.name,
+        url: fileUrl,
+        uploadedBy: userId,
+        uploadedAt: Date.now(),
+      });
+
+      alert(`${category} uploaded successfully!`);
+      setFile(null);
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert("Error uploading file!");
     }
-    setResources(newResources);
   };
 
-  // Upload by student (to "materials")
-  const handleStudentUpload = async () => {
-    if (!uploadFile || !uploadTitle.trim()) return alert("Fill all fields!");
-    const fileRef = ref(storage, `materials/${uploadFile.name}`);
-    await uploadBytes(fileRef, uploadFile);
-    const fileURL = await getDownloadURL(fileRef);
+  // 🔹 Upload student material
+  const uploadStudentMaterial = async () => {
+    if (!file || !materialTitle)
+      return alert("Please enter title and select a file.");
 
-    await addDoc(collection(db, "resources", "classA", "materials"), {
-      title: uploadTitle,
-      fileURL,
-      uploadedBy: user.uid,
-      uploadedByName: user.displayName || "Anonymous",
-      upvotes: 0,
-    });
+    try {
+      const fileRef = ref(storage, `studentMaterials/${file.name}`);
+      await uploadBytes(fileRef, file);
+      const fileUrl = await getDownloadURL(fileRef);
 
-    setUploadFile(null);
-    setUploadTitle("");
-    fetchResources();
+      await addDoc(collection(db, "resources", "classA", "studentMaterials"), {
+        title: materialTitle,
+        url: fileUrl,
+        uploadedBy: userId,
+        uploadedAt: Date.now(),
+        upvotes: 0,
+        tags: tags ? tags.split(",").map((t) => t.trim().toLowerCase()) : [],
+      });
+
+      alert("Material uploaded successfully!");
+      setMaterialTitle("");
+      setTags("");
+      setFile(null);
+    } catch (err) {
+      console.error("Error uploading material:", err);
+      alert("Failed to upload material.");
+    }
   };
 
-  // Upload by faculty (to any other category)
-  const handleFacultyUpload = async (category) => {
-    if (!uploadFile || !uploadTitle.trim()) return alert("Fill all fields!");
-    const fileRef = ref(storage, `${category}/${uploadFile.name}`);
-    await uploadBytes(fileRef, uploadFile);
-    const fileURL = await getDownloadURL(fileRef);
+  // 🔹 Handle upvote logic
+  const handleUpvote = async (materialId, uploaderId) => {
+    if (uploaderId === userId)
+      return alert("You cannot upvote your own material!");
 
-    await addDoc(collection(db, "resources", "classA", category), {
-      title: uploadTitle,
-      fileURL,
-      uploadedBy: user.uid,
-      uploadedByName: user.displayName || "Faculty",
-    });
+    try {
+      const matRef = doc(db, "resources", "classA", "studentMaterials", materialId);
+      await updateDoc(matRef, { upvotes: increment(1) });
 
-    setUploadFile(null);
-    setUploadTitle("");
-    fetchResources();
+      const uploaderRef = doc(db, "users", uploaderId);
+      await updateDoc(uploaderRef, { points: increment(20) });
+
+      setMaterials((prev) =>
+        prev.map((m) =>
+          m.id === materialId ? { ...m, upvotes: m.upvotes + 1 } : m
+        )
+      );
+    } catch (err) {
+      console.error("Error upvoting:", err);
+      alert("Failed to upvote.");
+    }
   };
 
-  // Handle upvote (no self-upvote)
-  const handleUpvote = async (materialId, uploadedBy) => {
-    if (uploadedBy === user.uid) return alert("You can’t upvote your own material!");
-    const docRef = doc(db, "resources", "classA", "materials", materialId);
-    await updateDoc(docRef, { upvotes: increment(1) });
+  // 🔍 Search + Tag Filter
+  const filteredMaterials = materials.filter(
+    (m) =>
+      m.title.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      (selectedTags.length === 0 ||
+        selectedTags.some((tag) => m.tags?.includes(tag)))
+  );
 
-    // Update class points of uploader
-    const uploaderRef = doc(db, "students", uploadedBy);
-    await updateDoc(uploaderRef, { classPoints: increment(5) });
-
-    fetchResources();
-  };
+  if (loading) return <p className="text-center mt-10">Loading your permissions...</p>;
+  if (error) return <p className="text-center mt-10 text-red-500">{error}</p>;
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <h1 className="text-3xl font-bold mb-6 text-center">📚 Class Resources</h1>
+    <div className="p-6">
+      <h1 className="text-3xl font-bold mb-6 flex items-center gap-2">
+        📚 Class Resources
+      </h1>
 
-      {/* -------- Faculty/Static Sections -------- */}
-      {["syllabus", "ppts", "assignments", "books", "pyqs"].map((cat) => (
-        <Card key={cat} className="mb-6 shadow-md border-t-4 border-gray-300">
+      {/* ================= Faculty Sections ================= */}
+      {categories.map((cat) => (
+        <Card key={cat} className="mb-6">
           <CardContent>
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-xl font-semibold capitalize">{cat}</h2>
+            <h2 className="text-xl font-semibold mb-2 capitalize">{cat}</h2>
 
-              {/* Upload visible only to faculty */}
-              {userRole === "faculty" && (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder={`Title for ${cat}`}
-                    value={uploadTitle}
-                    onChange={(e) => setUploadTitle(e.target.value)}
-                    className="border p-1 rounded-md text-sm"
-                  />
-                  <input
-                    type="file"
-                    onChange={(e) => setUploadFile(e.target.files[0])}
-                    className="border p-1 rounded-md text-sm"
-                  />
-                  <Button
-                    onClick={() => handleFacultyUpload(cat)}
-                    className="flex items-center gap-2"
-                  >
-                    <Upload size={16} /> Upload
-                  </Button>
-                </div>
-              )}
-            </div>
+            {userRole === "faculty" && (
+              <div className="mb-3 flex gap-2 items-center">
+                <input
+                  type="file"
+                  onChange={(e) => setFile(e.target.files[0])}
+                />
+                <Button onClick={() => uploadResource(cat)}>Upload</Button>
+              </div>
+            )}
 
-            <ul className="list-disc ml-6">
-              {resources[cat]?.length > 0 ? (
-                resources[cat].map((res) => (
-                  <li key={res.id}>
-                    <a
-                      href={res.fileURL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline"
-                    >
-                      {res.title}
-                    </a>
-                  </li>
-                ))
-              ) : (
-                <p className="text-gray-500">No {cat} uploaded yet.</p>
-              )}
-            </ul>
+            <p className="text-gray-500">
+              No {cat} uploaded yet.
+            </p>
           </CardContent>
         </Card>
       ))}
 
-      {/* -------- Student Uploaded Section -------- */}
-      <Card className="shadow-lg border-t-4 border-blue-500">
+      {/* ================= Student Uploaded Materials ================= */}
+      <Card>
         <CardContent>
-          <h2 className="text-2xl font-semibold mb-4">📤 Student Uploaded Material</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            🧑‍🎓 Student Uploaded Material
+          </h2>
 
-          {/* Student Upload Form */}
+          {/* Student Upload Section */}
           {userRole === "student" && (
-            <div className="flex flex-col sm:flex-row gap-3 mb-4">
-              <input
+            <div className="mb-6 space-y-2">
+              <Input
                 type="text"
-                placeholder="Enter title..."
-                value={uploadTitle}
-                onChange={(e) => setUploadTitle(e.target.value)}
-                className="border p-2 rounded-md flex-1"
+                placeholder="Enter title"
+                value={materialTitle}
+                onChange={(e) => setMaterialTitle(e.target.value)}
+              />
+              <Input
+                type="text"
+                placeholder="Add tags (comma separated)"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
               />
               <input
                 type="file"
-                onChange={(e) => setUploadFile(e.target.files[0])}
-                className="border p-2 rounded-md flex-1"
+                onChange={(e) => setFile(e.target.files[0])}
               />
-              <Button onClick={handleStudentUpload} className="flex items-center gap-2">
-                <Upload size={18} /> Upload
-              </Button>
+              <Button onClick={uploadStudentMaterial}>Upload Material</Button>
             </div>
           )}
 
-          {/* Uploaded materials */}
-          {resources.materials?.length > 0 ? (
-            resources.materials.map((m) => (
-              <div
-                key={m.id}
-                className="flex justify-between items-center p-3 border rounded-lg mb-2 bg-white hover:shadow"
-              >
-                <div>
-                  <a
-                    href={m.fileURL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-semibold text-blue-700"
-                  >
-                    {m.title}
-                  </a>
-                  <p className="text-sm text-gray-500">
-                    Uploaded by {m.uploadedByName}
-                  </p>
-                </div>
+        {/* Search & Filter Section */}
+<div className="flex flex-col sm:flex-row justify-between items-center gap-3 mb-6">
+  {/* 🔍 Search Bar */}
+  <div className="w-full sm:w-2/3">
+    <Input
+      type="text"
+      placeholder="🔍 Search uploaded materials..."
+      value={searchQuery}
+      onChange={(e) => setSearchQuery(e.target.value)}
+      className="w-full border rounded-lg p-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+    />
+  </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleUpvote(m.id, m.uploadedBy)}
-                    className="flex items-center gap-1 border px-3 py-1 rounded-md hover:bg-gray-100"
-                  >
-                    <ArrowUp size={16} /> {m.upvotes}
-                  </button>
-                </div>
-              </div>
-            ))
+  {/* 🏷️ Filter by Tag */}
+  <div className="w-full sm:w-1/3">
+    <label className="block text-sm text-gray-600 mb-1">Filter by tag:</label>
+    <select
+      multiple
+      className="border rounded-lg p-2 w-full focus:ring-2 focus:ring-indigo-400 outline-none"
+      onChange={(e) =>
+        setSelectedTags([...e.target.selectedOptions].map((o) => o.value))
+      }
+    >
+      <option value="notes">Notes</option>
+      <option value="assignments">Assignments</option>
+      <option value="books">Books</option>
+      <option value="pyqs">PYQs</option>
+    </select>
+    <p className="text-xs text-gray-500 mt-1">
+      (Hold <b>Ctrl</b> or <b>Cmd</b> to select multiple)
+    </p>
+  </div>
+</div>
+
+
+          {/* Display Student Materials */}
+          {filteredMaterials.length === 0 ? (
+            <p className="text-gray-500">No student materials found.</p>
           ) : (
-            <p className="text-gray-500">No student materials yet.</p>
+            <div className="grid gap-3">
+              {filteredMaterials.map((mat) => (
+                <Card key={mat.id}>
+                  <CardContent className="flex justify-between items-center">
+                    <div>
+                      <h3 className="font-medium">{mat.title}</h3>
+                      <p className="text-sm text-gray-500">
+                        {mat.tags?.join(", ")}
+                      </p>
+                      <a
+                        href={mat.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 underline text-sm"
+                      >
+                        View File
+                      </a>
+                    </div>
+                    <div className="flex flex-col items-center">
+                      <Button
+                        size="sm"
+                        onClick={() => handleUpvote(mat.id, mat.uploadedBy)}
+                      >
+                        👍 {mat.upvotes}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
