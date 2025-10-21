@@ -6,7 +6,7 @@ import ClassBoard from "./pages/ClassBoard";
 import Login from "./pages/Login"; // adjust path if needed
 import StudentDashboard from "./pages/StudentDashboard";
 import FacultyDashboard from "./pages/FacultyDashboard";
-import Leaderboard from "./pages/Leaderboard";
+import Leaderboard from "./pages/LeaderboardPage";
 import ProtectedRoute from "./components/ProtectedRoute"; // small guard (see implementation below)
 
 import "./index.css"; // optional (tailwind / css)
