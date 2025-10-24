@@ -1,11 +1,8 @@
 [
-    {
-      "origin": ["http://localhost:5173", "https://courseconnect-proto.vercel.app/"],
-      "method": ["GET", "POST", "PUT", "DELETE"],
-      "maxAgeSeconds": 3600,
-      "responseHeader": ["Content-Type", "x-goog-meta-*"]
-    }
-  ]
-  
-
-  
+  {
+    "origin": ["http://localhost:5173", "https://courseconnect-proto.vercel.app", "https://courseconnect-1fe16.web.app"],
+    "method": ["GET", "POST", "PUT", "DELETE", "HEAD"],
+    "responseHeader": ["Content-Type", "x-goog-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]

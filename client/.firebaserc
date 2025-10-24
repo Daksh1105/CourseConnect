@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "courseconnect-1fe16"
-  }
+    "default": "courseconnect-1fe16",
+    "courseconnect": "courseconnect-1fe16"
+  },
+  "targets": {},
+  "etags": {}
 }
