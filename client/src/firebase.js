@@ -4,6 +4,7 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
+
 /*
   ✅ Environment variables setup (for Vite)
   Make sure you have these keys in your .env file:
