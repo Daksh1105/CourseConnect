@@ -3,7 +3,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import ClassBoard from "./pages/ClassBoard";
-import Login from "./pages/Login"; // adjust path if needed
+import Login from "./pages/Login.jsx"; // adjust path if needed
 import StudentDashboard from "./pages/StudentDashboard";
 import FacultyDashboard from "./pages/FacultyDashboard";
 import Leaderboard from "./pages/LeaderboardPage";
