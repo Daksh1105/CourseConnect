@@ -6,6 +6,7 @@ import ClassBoard from "./pages/ClassBoard";
 import Login from "./pages/Login.jsx"; // adjust path if needed
 import StudentDashboard from "./pages/StudentDashboard";
 import FacultyDashboard from "./pages/FacultyDashboard";
+import StudentProfilePage from './pages/StudentProfilePage'; // CHANGED: Back to your filename
 import Leaderboard from "./pages/LeaderboardPage";
 import ProtectedRoute from "./components/ProtectedRoute"; // small guard (see implementation below)
 
@@ -14,7 +15,6 @@ import "./index.css"; // optional (tailwind / css)
 /*
   Entry point and routing.
   - ProtectedRoute will check Firebase auth and optionally role.
-  - If you don't have ProtectedRoute, add the file at src/components/ProtectedRoute.jsx
 */
 
 function AppRoutes() {
@@ -45,6 +45,16 @@ function AppRoutes() {
           }
         />
 
+        {/* Profile route for both students and faculty */}
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute requiredRole={["student", "faculty"]}>
+              <StudentProfilePage /> {/* CHANGED: Back to your filename */}
+            </ProtectedRoute>
+          }
+        />
+
         {/* fallback -> go to login */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -54,4 +64,3 @@ function AppRoutes() {
 
 const root = createRoot(document.getElementById("root"));
 root.render(<AppRoutes />);
-

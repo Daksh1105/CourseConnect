@@ -5,13 +5,6 @@ import { useAuthState } from "react-firebase-hooks/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase"; // Make sure this path is correct
 
-/*
-This component does three things:
-  1. Shows a loading spinner while checking auth.
-  2. If user is not logged in, redirects to the login page.
-  3. If user *is* logged in but their role doesn't match `requiredRole`, redirects to login.
-  4. If user is logged in *and* has the correct role, it shows the children (the dashboard).
-*/
 export default function ProtectedRoute({ children, requiredRole }) {
   const [user, loadingAuth] = useAuthState(auth);
   const [role, setRole] = React.useState(null);
@@ -58,12 +51,22 @@ export default function ProtectedRoute({ children, requiredRole }) {
     return <Navigate to="/" replace />;
   }
 
+  // --- THIS IS THE CHANGED SECTION ---
   // 3. Logged in, but role does not match
-  if (role !== requiredRole) {
-    // You could redirect to a generic dashboard or just back to login
-    console.warn(`Role mismatch: User has role [${role}], route requires [${requiredRole}]`);
+  // Checks if requiredRole is an array (e.g., ["student", "faculty"]) 
+  // or a single string (e.g., "student")
+  const hasRequiredRole = Array.isArray(requiredRole)
+    ? requiredRole.includes(role)
+    : role === requiredRole;
+
+  if (!hasRequiredRole) {
+    // Role doesn't match, redirect to login
+    console.warn(
+      `Role mismatch: User has role [${role}], route requires [${requiredRole}]`
+    );
     return <Navigate to="/" replace />;
   }
+  // --- END OF CHANGE ---
 
   // 4. Logged in AND has correct role
   return children;

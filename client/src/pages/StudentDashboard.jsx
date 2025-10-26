@@ -1,7 +1,7 @@
 // src/pages/StudentDashboard.jsx
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import firebaseApp, { auth, db } from "../firebase";
+import { useNavigate, Link } from "react-router-dom";
+import { auth, db } from "../firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
   collection,
@@ -13,64 +13,67 @@ import {
   setDoc,
   where,
   serverTimestamp,
-  updateDoc,
+  limit, // For announcements
 } from "firebase/firestore";
 
 /*
- Student Dashboard
- - Shows student's name on top (fetched from users collection)
- - Profile section: shows name/email and allows editing name
- - Join class by class code (e.g. UCS501)
- - Lists only classes the student has joined (classes/{id}/members/{uid})
- - Clicking a class navigates to /class/:classId
-
- Assumptions:
- - users collection exists with doc id = uid and fields { name, email, role }
- - classes collection has docs with { name, classCode, createdAt }
- - membership is stored at classes/{classId}/members/{uid}
+  Student Dashboard (v3 - Hybrid Layout)
+  - Sidebar: Collapsible "mini" bar that expands on click.
+  - Header: Contains sidebar toggle, "Join" button, and profile.
+  - Main Area: Welcome message, Announcements, and Class Card grid.
+  - Modal: "Join Class" modal.
 */
 
 export default function StudentDashboard() {
   const navigate = useNavigate();
   const [authUser, setAuthUser] = useState(null);
-  const [profile, setProfile] = useState(null); // Firestore user data (name, role, email)
+  const [profile, setProfile] = useState(null);
   const [joinedClasses, setJoinedClasses] = useState([]);
-  const [activeClassId, setActiveClassId] = useState(null);
-
+  const [announcements, setAnnouncements] = useState([]);
+  
   const [loading, setLoading] = useState(true);
-  const [joinCode, setJoinCode] = useState("");
-  const [joining, setJoining] = useState(false);
-  const [error, setError] = useState("");
+  const [announcementsLoading, setAnnouncementsLoading] = useState(true);
+  
+  // UI State
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
 
-  // Listen for auth and load profile + joined classes
+  // Listen for auth and load all user data
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      if (!u) {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!user) {
         navigate("/");
         return;
       }
-      setAuthUser(u);
-      await loadUserProfile(u.uid);
-      await fetchJoinedClasses(u.uid);
-      setLoading(false);
+      setAuthUser(user);
+      loadAllData(user.uid);
     });
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Chained data loading function
+  async function loadAllData(uid) {
+    setLoading(true);
+    try {
+      await loadUserProfile(uid);
+      const classes = await fetchJoinedClasses(uid);
+      await fetchAnnouncements(classes);
+    } catch (err) {
+      console.error("Error loading dashboard data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // Load Firestore user doc
   async function loadUserProfile(uid) {
-    try {
-      const userRef = doc(db, "users", uid);
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
-        setProfile(snap.data());
-      } else {
-        // fallback: set basic profile using auth info
-        setProfile({ name: auth.currentUser?.displayName || "", email: auth.currentUser?.email || "", role: "student" });
-      }
-    } catch (e) {
-      console.error("loadUserProfile:", e);
+    const userRef = doc(db, "users", uid);
+    const snap = await getDoc(userRef);
+    if (snap.exists()) {
+      setProfile(snap.data());
+    } else {
+      setProfile({ name: auth.currentUser?.displayName || "Student", email: auth.currentUser?.email, role: "student" });
     }
   }
 
@@ -87,10 +90,42 @@ export default function StudentDashboard() {
         }
       }
       setJoinedClasses(joined);
-      if (joined.length > 0 && !activeClassId) setActiveClassId(joined[0].id);
+      return joined; // Return for chaining
     } catch (e) {
       console.error("fetchJoinedClasses:", e);
       setJoinedClasses([]);
+      return [];
+    }
+  }
+  
+  // Fetch 5 most recent announcements from all joined classes
+  async function fetchAnnouncements(classes) {
+    if (classes.length === 0) {
+      setAnnouncements([]);
+      setAnnouncementsLoading(false);
+      return;
+    }
+    setAnnouncementsLoading(true);
+    try {
+      const promises = classes.map(cls => {
+        const annQuery = query(
+          collection(db, "classes", cls.id, "announcements"),
+          orderBy("postedAt", "desc"),
+          limit(3)
+        );
+        return getDocs(annQuery).then(snap => 
+          snap.docs.map(d => ({ ...d.data(), id: d.id, className: cls.name, classId: cls.id }))
+        );
+      });
+      const results = await Promise.all(promises);
+      const allAnnouncements = results.flat();
+      allAnnouncements.sort((a, b) => b.postedAt.toDate() - a.postedAt.toDate());
+      setAnnouncements(allAnnouncements.slice(0, 5)); // Get top 5 recent
+    } catch (e) {
+      console.error("fetchAnnouncements:", e);
+      setAnnouncements([]);
+    } finally {
+      setAnnouncementsLoading(false);
     }
   }
 
@@ -99,72 +134,23 @@ export default function StudentDashboard() {
     navigate(`/class/${classId}`);
   }
 
-  // Join class by code (students enter classCode provided by faculty)
-  async function handleJoinByCode(e) {
-    e?.preventDefault?.();
-    setError("");
-    if (!joinCode.trim()) {
-      setError("Enter a class code.");
-      return;
-    }
-    if (!authUser) {
-      setError("Not authenticated.");
-      return;
-    }
-    setJoining(true);
-    try {
-      // find class by classCode (case-insensitive common approach)
-      const q = query(collection(db, "classes"), where("classCode", "==", joinCode.trim()));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        setError("No class found with that code.");
-        setJoining(false);
-        return;
-      }
-      const classDoc = snap.docs[0];
-      const classId = classDoc.id;
-
-      // Write membership doc
-      const memberRef = doc(db, "classes", classId, "members", authUser.uid);
-      await setDoc(memberRef, {
-        uid: authUser.uid,
-        email: authUser.email,
-        role: "student",
-        joinedAt: serverTimestamp(),
-      });
-
-      // Refresh joined classes and clear code
-      await fetchJoinedClasses(authUser.uid);
-      setJoinCode("");
-      setError("");
-      // select the class
-      setActiveClassId(classId);
-      alert(`Joined class: ${classDoc.data().name || classId}`);
-    } catch (e) {
-      console.error("handleJoinByCode:", e);
-      setError("Failed to join class. See console.");
-    } finally {
-      setJoining(false);
-    }
-  }
-
-  // Edit profile name (simple prompt)
-  async function handleEditName() {
-    if (!authUser) return;
-    const newName = prompt("Enter your full name:", profile?.name || "");
-    if (newName === null) return; // cancelled
-    const trimmed = (newName || "").trim();
-    if (!trimmed) return alert("Name cannot be empty.");
-    try {
-      const userRef = doc(db, "users", authUser.uid);
-      await updateDoc(userRef, { name: trimmed });
-      // update local state
-      setProfile(prev => ({ ...(prev || {}), name: trimmed }));
-      alert("Name updated.");
-    } catch (e) {
-      console.error("update name:", e);
-      alert("Failed to update name.");
-    }
+  // Join class by code (LOGIC IS PASSED TO MODAL)
+  async function handleJoinByCode(joinCode) {
+    if (!joinCode.trim()) throw new Error("Enter a class code.");
+    if (!authUser) throw new Error("Not authenticated.");
+    const q = query(collection(db, "classes"), where("classCode", "==", joinCode.trim()));
+    const snap = await getDocs(q);
+    if (snap.empty) throw new Error("No class found with that code.");
+    const classDoc = snap.docs[0];
+    const memberRef = doc(db, "classes", classDoc.id, "members", authUser.uid);
+    await setDoc(memberRef, {
+      uid: authUser.uid,
+      email: authUser.email,
+      role: "student",
+      joinedAt: serverTimestamp(),
+      name: profile?.name || "Student"
+    });
+    await loadAllData(authUser.uid); // Refresh all data
   }
 
   // Logout
@@ -174,93 +160,367 @@ export default function StudentDashboard() {
   }
 
   if (loading) {
-    return <div style={{ padding: 20 }}>Loading...</div>;
+    return <div className="flex min-h-screen items-center justify-center">Loading Dashboard...</div>;
   }
 
   return (
-    <div style={{ minHeight: "100vh", padding: 20, fontFamily: "system-ui, sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div>
-          <h1 style={{ margin: 0 }}>{profile?.name || authUser?.email}</h1>
-          <div style={{ color: "#6b7280", fontSize: 13 }}>{profile?.role ? `${profile.role}` : ""}</div>
-        </div>
+    <div className="flex min-h-screen bg-slate-50"> {/* <-- THIS IS THE CHANGE */}
+      <Sidebar
+        isExpanded={isSidebarExpanded}
+        joinedClasses={joinedClasses}
+        onOpenClass={openClass}
+      />
+      
+      <JoinClassModal
+        isOpen={isJoinModalOpen}
+        onClose={() => setIsJoinModalOpen(false)}
+        onJoin={handleJoinByCode}
+      />
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button onClick={handleLogout} style={{ padding: "8px 12px", borderRadius: 8 }}>Logout</button>
-        </div>
-      </header>
-
-      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}>
-        {/* Left: Sidebar (Profile & Join by Code & My Classes) */}
-        <aside style={{ background: "#fff", padding: 16, borderRadius: 8, boxShadow: "0 6px 20px rgba(15,23,42,0.06)" }}>
-          {/* Profile */}
-          <div style={{ marginBottom: 18 }}>
-            <h3 style={{ margin: "0 0 8px 0" }}>Profile</h3>
-            <div style={{ color: "#111827" }}>
-              <div style={{ fontWeight: 700 }}>{profile?.name || "-"}</div>
-              <div style={{ fontSize: 13, color: "#6b7280" }}>{authUser?.email}</div>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <button onClick={handleEditName} style={{ padding: "6px 10px", borderRadius: 6 }}>Edit name</button>
-            </div>
-          </div>
-
-          {/* Join by class code */}
-          <div style={{ marginBottom: 18 }}>
-            <h3 style={{ margin: "0 0 8px 0" }}>Join Class</h3>
-            <form onSubmit={handleJoinByCode} style={{ display: "flex", gap: 8 }}>
-              <input
-                type="text"
-                placeholder="Enter class code (e.g. UCS501)"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-                style={{ flex: 1, padding: 8, borderRadius: 6, border: "1px solid #e5e7eb" }}
-              />
-              <button type="submit" disabled={joining} style={{ padding: "8px 10px", borderRadius: 6, background: "#4f46e5", color: "#fff", border: "none" }}>
-                {joining ? "Joining..." : "Join"}
-              </button>
-            </form>
-            {error && <div style={{ color: "crimson", marginTop: 8 }}>{error}</div>}
-          </div>
-
-          {/* My Classes */}
-          <div>
-            <h3 style={{ margin: "0 0 8px 0" }}>My Classes</h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {joinedClasses.length === 0 && <div style={{ color: "#6b7280" }}>You haven't joined any classes yet.</div>}
-              {joinedClasses.map((c) => (
-                <div key={c.id} onClick={() => openClass(c.id)} style={{
-                  padding: 10,
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  background: activeClassId === c.id ? "#eef2ff" : "transparent",
-                  border: activeClassId === c.id ? "1px solid #c7d2fe" : "1px solid #f3f4f6"
-                }}>
-                  <div style={{ fontWeight: 700 }}>{c.name || "Untitled Class"}</div>
-                  {c.classCode && <div style={{ fontSize: 12, color: "#6b7280" }}>{c.classCode}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        {/* Main content: simple welcome and instructions (actual class interactions are in ClassBoard) */}
-        <main style={{ background: "#fff", padding: 20, borderRadius: 8, boxShadow: "0 6px 20px rgba(15,23,42,0.06)" }}>
-          <h2 style={{ marginTop: 0 }}>Welcome, {profile?.name || "Student"}!</h2>
-          <p style={{ color: "#6b7280" }}>
-            This page shows the classes you have joined. Click a class to open its ClassBoard where you can post questions, answer, and access resources for that class.
-          </p>
-
-          <div style={{ marginTop: 18 }}>
-            <h3 style={{ marginBottom: 8 }}>Quick tips for demo</h3>
-            <ul style={{ color: "#374151" }}>
-              <li>Ask your faculty for the class code (e.g. UCS501) and enter it above to join.</li>
-              <li>All class interactions (questions, answers, resources) happen inside the ClassBoard for the selected class.</li>
-              <li>Edit your name in the Profile section — this name will show on your dashboard, class posts, and leaderboard.</li>
-            </ul>
-          </div>
+      {/* --- MAIN CONTENT (Header + Dashboard) --- */}
+      <div className={`flex-1 flex flex-col transition-all duration-300 ${isSidebarExpanded ? 'ml-72' : 'ml-20'}`}>
+        <Header
+          profile={profile}
+          onLogout={handleLogout}
+          onToggleSidebar={() => setIsSidebarExpanded(!isSidebarExpanded)}
+          onOpenJoinModal={() => setIsJoinModalOpen(true)}
+        />
+        
+        {/* --- DASHBOARD: Welcome, Announcements, Grid --- */}
+        <main className="flex-1 p-6 lg:p-8"> {/* <-- Removed background color here */}
+          <DashboardContent
+            profileName={profile?.name}
+            joinedClasses={joinedClasses}
+            onOpenClass={openClass}
+            announcements={announcements}
+            loadingAnnouncements={announcementsLoading}
+          />
         </main>
       </div>
     </div>
+  );
+}
+
+// --- Sub-Components ---
+
+function Header({ profile, onLogout, onToggleSidebar, onOpenJoinModal }) {
+  const profileInitial = profile?.name ? profile.name[0].toUpperCase() : "?";
+
+  return (
+    <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 md:px-6">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onToggleSidebar}
+          className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+        >
+          <MenuIcon />
+        </button>
+        <span className="text-xl font-medium text-gray-700">CourseConnect</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onOpenJoinModal}
+          className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+        >
+          <PlusIcon />
+        </button>
+        <div className="relative">
+          <button className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-600 text-sm font-semibold text-white">
+            {profileInitial}
+          </button>
+        </div>
+        <button 
+          onClick={onLogout} 
+          className="ml-2 rounded-md bg-white px-3 py-2 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+        >
+          Logout
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Sidebar({ isExpanded, joinedClasses, onOpenClass }) {
+  return (
+    <aside 
+      className={`fixed top-0 left-0 z-40 h-screen flex-col bg-white p-4 shadow-lg transition-all duration-300 ${
+        isExpanded ? 'w-72' : 'w-20'
+      }`}
+    >
+      <div className="flex h-12 items-center justify-center">
+        {/* Show full logo or just icon */}
+        <Logo isExpanded={isExpanded} />
+      </div>
+      
+      <nav className="mt-8 space-y-2">
+        <SidebarLink
+          to="/profile"
+          icon={<ProfileIcon />}
+          text="My Profile"
+          isExpanded={isExpanded}
+        />
+        {/* Add other links here (e.g., Calendar) */}
+      </nav>
+      
+      {/* "My Classes" list, only shows when expanded */}
+      <div className={`mt-8 flex-1 border-t pt-6 overflow-y-auto ${!isExpanded && 'hidden'}`}>
+        <h3 className="mb-3 text-xs font-semibold uppercase text-gray-500">My Classes</h3>
+        <div className="space-y-2">
+          {joinedClasses.length === 0 && (
+            <p className="text-sm text-gray-500">No classes joined.</p>
+          )}
+          {joinedClasses.map((c) => (
+            <div 
+              key={c.id} 
+              onClick={() => onOpenClass(c.id)}
+              className="cursor-pointer rounded-md p-3 hover:bg-gray-50"
+            >
+              <div className="font-semibold text-gray-800 truncate">{c.name || "Untitled Class"}</div>
+              <div className="text-sm text-gray-500">{c.classCode}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+// Helper component for links in the sidebar
+function SidebarLink({ to, icon, text, isExpanded }) {
+  return (
+    <Link 
+      to={to} 
+      className={`flex items-center gap-4 rounded-md p-3 text-gray-700 hover:bg-gray-100 ${
+        !isExpanded && 'justify-center'
+      }`}
+    >
+      <div className="flex-shrink-0">{icon}</div>
+      <span className={`flex-1 truncate ${!isExpanded && 'hidden'}`}>{text}</span>
+    </Link>
+  );
+}
+
+function DashboardContent({ profileName, joinedClasses, onOpenClass, announcements, loadingAnnouncements }) {
+  return (
+    <div className="space-y-8">
+      {/* --- 1. Welcome Message --- */}
+      <h1 className="text-3xl font-bold text-gray-900">
+        Welcome back, {profileName || "Student"}!
+      </h1>
+      
+      {/* --- 2. Announcements --- */}
+      <div>
+        <h2 className="text-2xl font-semibold text-gray-900">Recent Announcements</h2>
+        <div className="mt-4 flow-root">
+          {loadingAnnouncements && <p className="text-gray-500">Loading announcements...</p>}
+          {!loadingAnnouncements && announcements.length === 0 && (
+            <p className="text-sm text-gray-500">No new announcements from your classes.</p>
+          )}
+          {!loadingAnnouncements && announcements.length > 0 && (
+            <ul className="space-y-4">
+              {announcements.map((ann) => (
+                <li key={ann.id} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-800">
+                      {ann.className || "Class"}
+                    </span>
+                    <span className="text-sm text-gray-500">
+                      {ann.postedAt?.toDate().toLocaleDateString() || "..."}
+                    </span>
+                  </div>
+                  <h3 className="mt-3 text-lg font-semibold text-gray-900">{ann.title || "No Title"}</h3>
+                  <p className="mt-1 text-sm text-gray-600 line-clamp-2">{ann.content || "No content."}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+      
+      {/* --- 3. Class Grid --- */}
+      <div>
+        <h2 className="text-2xl font-semibold text-gray-900">My Classes</h2>
+        {joinedClasses.length === 0 ? (
+          <div className="mt-4 text-center text-gray-600">
+            <p>You haven't joined any classes yet.</p>
+            <p>Click the "+" button in the header to get started.</p>
+          </div>
+        ) : (
+          <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {joinedClasses.map((c) => (
+              <ClassCard key={c.id} classData={c} onOpenClass={onOpenClass} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ClassCard({ classData, onOpenClass }) {
+  const colors = [
+    'bg-blue-600', 'bg-green-600', 'bg-purple-600', 
+    'bg-red-600', 'bg-indigo-600', 'bg-pink-600'
+  ];
+  const color = colors[(classData.name.length || 0) % colors.length];
+
+  return (
+    <div className="flex flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-md transition-all hover:shadow-lg">
+      <div 
+        onClick={() => onOpenClass(classData.id)}
+        className={`relative h-32 w-full p-4 text-white cursor-pointer ${color}`}
+      >
+        <h3 className="text-2xl font-semibold truncate">{classData.name || "Untitled"}</h3>
+        <p className="text-sm text-blue-50">{classData.classCode}</p>
+        {/* You can add faculty avatar here if available */}
+      </div>
+      <div className="flex-1 p-4">
+        <p className="text-sm text-gray-600">
+          Faculty: {classData.facultyName || "N/A"}
+        </p>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t p-3">
+        <button className="rounded-full p-2 text-gray-500 hover:bg-gray-100"><FolderIcon /></button>
+        <button className="rounded-full p-2 text-gray-500 hover:bg-gray-100"><OptionsIcon /></button>
+      </div>
+    </div>
+  );
+}
+
+function JoinClassModal({ isOpen, onClose, onJoin }) {
+  const [joinCode, setJoinCode] = useState("");
+  const [error, setError] = useState("");
+  const [joining, setJoining] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setJoining(true);
+    try {
+      await onJoin(joinCode);
+      onClose();
+      setJoinCode("");
+    } catch (err) {
+      setError(err.message || "Failed to join class.");
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div 
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"
+      >
+        <h2 className="text-xl font-semibold text-gray-900">Join Class</h2>
+        <p className="mt-1 text-sm text-gray-600">
+          Enter the class code provided by your faculty.
+        </p>
+        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          <input
+            type="text"
+            placeholder="Class code"
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value)}
+            className="block w-full rounded-md border-gray-300 p-2 shadow-sm focus:border-orange-500 focus:ring-orange-500"
+          />
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={joining}
+              className="rounded-md bg-orange-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-orange-500 disabled:opacity-50"
+            >
+              {joining ? "Joining..." : "Join"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// --- SVG Icons ---
+
+// This is your logo from the login page, adapted for the sidebar
+function Logo({ isExpanded }) {
+  return (
+    <div className="flex items-center gap-2">
+      <svg
+        width="32"
+        height="32"
+        viewBox="0 0 32 32"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        className="flex-shrink-0"
+      >
+        <path
+          d="M16 0L32 8L16 16L0 8L16 0Z"
+          className="text-gray-800"
+          fill="currentColor"
+        />
+        <path
+          d="M16 17.6L0 9.6V24L16 32L32 24V9.6L16 17.6ZM16 29.3333L2.66667 22.6667V12.1333L16 19.8667L29.3333 12.1333V22.6667L16 29.3333Z"
+          className="text-orange-500"
+          fill="currentColor"
+        />
+      </svg>
+      <span className={`text-2xl font-semibold text-gray-800 ${!isExpanded && 'hidden'}`}>
+        CourseConnect
+      </span>
+    </div>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
+    </svg>
+  );
+}
+
+function OptionsIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM1m 0 5.25a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" />
+    </svg>
+  );
+}
+
+function ProfileIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+    </svg>
   );
 }
