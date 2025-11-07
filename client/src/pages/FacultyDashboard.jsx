@@ -117,7 +117,7 @@ export default function FacultyDashboard() {
       const docRef = await addDoc(classesRef, {
         classCode: code,
         name: title,
-        facultyName: profile?.name || "Faculty", // <-- ✅ THIS IS THE FIX
+        facultyName: profile?.name || "Faculty", // <-- This is the correct line
         createdBy: authUser.email,
         createdAt: serverTimestamp(),
         facultyId: authUser.uid, // optional metadata
@@ -146,49 +146,8 @@ export default function FacultyDashboard() {
     }
   }
 
-  const code = (newClass.code || "").trim();
-  const title = (newClass.title || "").trim();
-  if (!code) return alert("Class code is required (e.g. UCS501).");
-  if (!title) return alert("Class title is required.");
-  setCreating(true);
-
-  try {
-    const classesRef = collection(db, "classes");
-
-    // ✅ Create class with faculty UID in memberIds array
-    const docRef = await addDoc(classesRef, {
-      classCode: code,
-      name: title,
-      createdBy: authUser.email,
-      createdAt: serverTimestamp(),
-      facultyId: authUser.uid,       // optional metadata
-      facultyname: authUser.displayName,
-      memberIds: [authUser.uid],     // ✅ critical new field
-    });
-
-    // ✅ Add faculty membership in the members subcollection
-    const memberRef = doc(db, "classes", docRef.id, "members", authUser.uid);
-    await setDoc(memberRef, {
-      uid: authUser.uid,
-      email: authUser.email,
-      role: "faculty",
-      joinedAt: serverTimestamp(),
-    });
-
-    // Refresh list and UI
-    await fetchMyClasses(authUser.uid);
-    setNewClass({ code: "", title: "" });
-    setActiveClassId(docRef.id);
-    alert("Class created successfully.");
-  } catch (e) {
-    console.error("create class error:", e);
-    alert("Failed to create class. See console.");
-  } finally {
-    setCreating(false);
-  }
-}
-
-
+  // --- ❌ DELETED DUPLICATE BLOCK FROM HERE ❌ ---
+  
   // Edit name
   async function handleEditName() {
     if (!authUser) return;
@@ -418,4 +377,4 @@ export default function FacultyDashboard() {
       </div>
     </div>
   );
-}
+} // <-- This final bracket should no longer be red
