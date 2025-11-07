@@ -16,49 +16,9 @@ export default function QnaPage() {
   // 👤 Simulated current logged-in user
   const currentUser = "You";
 
-  // 🧩 Sample questions data
-  const [questions, setQuestions] = useState([
-    {
-      id: 1,
-      title: "What is overfitting in Machine Learning?",
-      description:
-        "Overfitting happens when a model memorizes training data instead of learning general patterns.",
-      tags: ["Machine Learning", "AI"],
-      author: "Raj Gupta",
-      image: null,
-      upvotes: 12,
-      replies: [
-        {
-          id: 11,
-          author: "Ananya",
-          text: "Overfitting is when your model performs well on training data but poorly on new data.",
-          upvotes: 5,
-          replies: [
-            {
-              id: 111,
-              author: "Rohit",
-              text: "Exactly — it learned the noise instead of the signal.",
-              upvotes: 2,
-              replies: [],
-            },
-          ],
-        },
-      ],
-      createdAt: Date.now() - 1000 * 60 * 60 * 24,
-    },
-    {
-      id: 2,
-      title: "Difference between SQL and NoSQL databases?",
-      description:
-        "SQL databases are relational and structured; NoSQL databases are non-relational and flexible.",
-      tags: ["DBMS"],
-      author: "Ananya",
-      image: null,
-      upvotes: 15,
-      replies: [],
-      createdAt: Date.now() - 1000 * 60 * 60,
-    },
-  ]);
+  // 🧩 Questions data (empty by default)
+const [questions, setQuestions] = useState([]);
+
 
   // 🏆 Class points tracker
   const [classPoints, setClassPoints] = useState({});
@@ -378,46 +338,60 @@ export default function QnaPage() {
       {!selectedQuestion && (
         <div className="space-y-4">
           {sorted.length > 0 ? (
-            sorted.map((q) => (
-              <motion.div
-                key={q.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.2 }}
-              >
-                <Card
-                  className="p-5 hover:shadow-lg cursor-pointer border border-gray-100"
-                  onClick={() => setSelectedQuestion(q)}
+  sorted.map((q) => (
+    <motion.div
+      key={q.id}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
+      <Card
+        className="p-5 hover:shadow-lg cursor-pointer border border-gray-100"
+        onClick={() => setSelectedQuestion(q)}
+      >
+        <div className="flex justify-between items-start">
+          <div>
+            <h3 className="font-semibold text-lg text-gray-800">{q.title}</h3>
+            <p className="text-sm text-gray-600 line-clamp-2">{q.description}</p>
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {q.tags.map((t) => (
+                <span
+                  key={t}
+                  className="px-2 py-1 text-xs bg-indigo-50 text-indigo-700 rounded-full border border-indigo-100"
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-semibold text-lg text-gray-800">{q.title}</h3>
-                      <p className="text-sm text-gray-600 line-clamp-2">{q.description}</p>
-                      <div className="flex gap-2 mt-2 flex-wrap">
-                        {q.tags.map((t) => (
-                          <span key={t} className="px-2 py-1 text-xs bg-indigo-50 text-indigo-700 rounded-full border border-indigo-100">#{t}</span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-center">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleUpvoteQuestion(q);
-                        }}
-                        className="rounded-md p-1 hover:bg-indigo-50"
-                      >
-                        <ArrowUp className="w-5 h-5 text-indigo-600" />
-                      </button>
-                      <span className="text-xs text-gray-600">{q.upvotes}</span>
-                    </div>
-                  </div>
-                </Card>
-              </motion.div>
-            ))
-          ) : (
-            <p className="text-gray-500 text-center mt-6">No questions match your search or filters.</p>
-          )}
+                  #{t}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col items-center">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleUpvoteQuestion(q);
+              }}
+              className="rounded-md p-1 hover:bg-indigo-50"
+            >
+              <ArrowUp className="w-5 h-5 text-indigo-600" />
+            </button>
+            <span className="text-xs text-gray-600">{q.upvotes}</span>
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  ))
+) : questions.length === 0 ? (
+  // 👉 No questions exist at all
+  <p className="text-gray-500 text-center mt-6">
+    No questions yet. Be the first to ask!
+  </p>
+) : (
+  // 👉 There are questions, but none match the filter/search
+  <p className="text-gray-500 text-center mt-6">
+    No questions match your search or filters.
+  </p>
+)}
+
         </div>
       )}
 
