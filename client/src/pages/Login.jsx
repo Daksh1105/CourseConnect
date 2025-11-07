@@ -47,34 +47,47 @@ export default function LoginPage() {
     });
     return () => unsub();
   }, [navigate]);
-
   // Handle Signup
-  async function handleSignup(e) {
-    e.preventDefault();
-    setError("");
-    if (!name.trim()) {
-      setError("Please enter your full name.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const cred = await createUserWithEmailAndPassword(auth, email, password);
-      await setDoc(doc(db, "users", cred.user.uid), {
-        uid: cred.user.uid,
-        name: name.trim(),
-        email: cred.user.email,
-        role,
-        createdAt: new Date().toISOString(),
-      });
-      if (role === "faculty") navigate("/faculty-dashboard");
-      else navigate("/student-dashboard");
-    } catch (err) {
-      console.error(err);
-      setError(err.message || "Signup failed");
-    } finally {
-      setLoading(false);
-    }
+async function handleSignup(e) {
+  e.preventDefault();
+  setError("");
+  if (!name.trim()) {
+    setError("Please enter your full name.");
+    return;
   }
+  setLoading(true);
+
+  try {
+    // ✅ Ensure Firebase Auth actually registers the user
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+
+    // ✅ Add Firestore profile
+    await setDoc(doc(db, "users", user.uid), {
+      uid: user.uid,
+      name: name.trim(),
+      email: user.email,
+      role,
+      createdAt: new Date().toISOString(),
+    });
+
+    console.log("✅ User successfully registered:", user.uid);
+
+    // ✅ Force refresh of user state before navigation
+    await user.reload();
+
+    // ✅ Navigate according to role
+    if (role === "faculty") navigate("/faculty-dashboard");
+    else navigate("/student-dashboard");
+
+  } catch (err) {
+    console.error("Signup Error:", err);
+    setError(err.message || "Signup failed. Please try again.");
+  } finally {
+    setLoading(false);
+  }
+}
+
 
   // Handle Login
   async function handleLogin(e) {

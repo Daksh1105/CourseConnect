@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom"; // Import useParams and Link
 import { db, auth } from "../firebase"; // Assuming firebase is configured
 import { doc, getDoc, collection, query, orderBy, limit, getDocs } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
 // Lucide Icons (as in your sample)
 import { Home, Megaphone, MessageSquare, BookOpen, Trophy, Bell, Calendar, Clock, TrendingUp, Award, Users, CheckCircle2, Folder, ChevronRight } from "lucide-react";
@@ -31,10 +32,14 @@ export default function ClassBoard() {
   // Fetch basic class details and recent announcements
   useEffect(() => {
     if (!classId) return;
-
-    const fetchClassData = async () => {
+  
+    // ✅ Wait for Firebase Auth to confirm user is loaded
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) return; // if user not logged in, skip
+  
       setLoading(true);
       setError("");
+  
       try {
         // Fetch class details
         const classRef = doc(db, "classes", classId);
@@ -44,8 +49,8 @@ export default function ClassBoard() {
         } else {
           setError("Class not found.");
         }
-
-        // Fetch recent announcements (only 3 for the dashboard home)
+  
+        // Fetch announcements only for logged-in user
         const annQuery = query(
           collection(db, "classes", classId, "announcements"),
           orderBy("postedAt", "desc"),
@@ -53,17 +58,18 @@ export default function ClassBoard() {
         );
         const annSnap = await getDocs(annQuery);
         setRecentAnnouncements(annSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-
       } catch (err) {
         console.error("Error fetching class data:", err);
         setError("Failed to load class data.");
       } finally {
         setLoading(false);
       }
-    };
-
-    fetchClassData();
+    });
+  
+    // Cleanup listener on unmount
+    return () => unsubscribe();
   }, [classId]);
+
 
 
   // --- Placeholder Data (from your sample App code) ---

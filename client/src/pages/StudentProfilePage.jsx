@@ -131,18 +131,34 @@ export default function StudentProfilePage() {
   async function handleJoinByCode(joinCode) {
     if (!joinCode.trim()) throw new Error("Enter a class code.");
     if (!authUser) throw new Error("Not authenticated.");
-    const q = query(collection(db, "classes"), where("classCode", "==", joinCode.trim()));
+  
+    const q = query(
+      collection(db, "classes"),
+      where("classCode", "==", joinCode.trim())
+    );
     const snap = await getDocs(q);
     if (snap.empty) throw new Error("No class found with that code.");
+  
     const classDoc = snap.docs[0];
-    const memberRef = doc(db, "classes", classDoc.id, "members", authUser.uid);
+    const classId = classDoc.id;
+  
+    // ✅ 1. Create the member document (same as before)
+    const memberRef = doc(db, "classes", classId, "members", authUser.uid);
     await setDoc(memberRef, {
       uid: authUser.uid,
       email: authUser.email,
       role: "student",
       joinedAt: serverTimestamp(),
-      name: profile?.name || "Student"
+      name: profile?.name || "Student",
     });
+  
+    // ✅ 2. Add this student's UID to class.memberIds array
+    await updateDoc(doc(db, "classes", classId), {
+      memberIds: arrayUnion(authUser.uid),
+    });
+  
+    // ✅ 3. Refresh dashboard data
+    await loadAllData(authUser.uid);
   }
 
   // --- 3. PROFILE-SPECIFIC FUNCTIONS ---

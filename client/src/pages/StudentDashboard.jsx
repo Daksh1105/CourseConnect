@@ -11,6 +11,8 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,      // ✅ needed for adding memberIds
+  arrayUnion,     // ✅ needed for adding to array field
   where,
   serverTimestamp,
   limit, // For announcements
@@ -80,23 +82,22 @@ export default function StudentDashboard() {
   // Fetch classes where classes/{id}/members/{uid} exists
   async function fetchJoinedClasses(uid) {
     try {
-      const classesSnap = await getDocs(query(collection(db, "classes"), orderBy("createdAt", "desc")));
-      const joined = [];
-      for (const c of classesSnap.docs) {
-        const memberRef = doc(db, "classes", c.id, "members", uid);
-        const memberSnap = await getDoc(memberRef);
-        if (memberSnap.exists()) {
-          joined.push({ id: c.id, ...c.data() });
-        }
-      }
+      const q = query(
+        collection(db, "classes"),
+        where("memberIds", "array-contains", uid),
+        orderBy("createdAt", "desc")
+      );
+      const classesSnap = await getDocs(q);
+      const joined = classesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       setJoinedClasses(joined);
-      return joined; // Return for chaining
+      return joined;
     } catch (e) {
       console.error("fetchJoinedClasses:", e);
       setJoinedClasses([]);
       return [];
     }
   }
+  
   
   // Fetch 5 most recent announcements from all joined classes
   async function fetchAnnouncements(classes) {
@@ -134,24 +135,39 @@ export default function StudentDashboard() {
     navigate(`/class/${classId}`);
   }
 
-  // Join class by code (LOGIC IS PASSED TO MODAL)
   async function handleJoinByCode(joinCode) {
     if (!joinCode.trim()) throw new Error("Enter a class code.");
     if (!authUser) throw new Error("Not authenticated.");
-    const q = query(collection(db, "classes"), where("classCode", "==", joinCode.trim()));
+  
+    const q = query(
+      collection(db, "classes"),
+      where("classCode", "==", joinCode.trim())
+    );
     const snap = await getDocs(q);
     if (snap.empty) throw new Error("No class found with that code.");
+  
     const classDoc = snap.docs[0];
-    const memberRef = doc(db, "classes", classDoc.id, "members", authUser.uid);
+    const classId = classDoc.id;
+  
+    // ✅ 1. Create the member document (same as before)
+    const memberRef = doc(db, "classes", classId, "members", authUser.uid);
     await setDoc(memberRef, {
       uid: authUser.uid,
       email: authUser.email,
       role: "student",
       joinedAt: serverTimestamp(),
-      name: profile?.name || "Student"
+      name: profile?.name || "Student",
     });
-    await loadAllData(authUser.uid); // Refresh all data
+  
+    // ✅ 2. Add this student's UID to class.memberIds array
+    await updateDoc(doc(db, "classes", classId), {
+      memberIds: arrayUnion(authUser.uid),
+    });
+  
+    // ✅ 3. Refresh dashboard data
+    await loadAllData(authUser.uid);
   }
+  
 
   // Logout
   async function handleLogout() {
@@ -512,10 +528,11 @@ function FolderIcon() {
 function OptionsIcon() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM1m 0 5.25a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" />
     </svg>
   );
 }
+
 
 function ProfileIcon() {
   return (

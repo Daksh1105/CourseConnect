@@ -90,47 +90,54 @@ export default function FacultyDashboard() {
     }
   }
 
-  // Create a new class (faculty only)
-  async function handleCreateClass(e) {
-    e?.preventDefault?.();
-    if (!authUser) {
-      alert("Not signed in");
-      return;
-    }
-    const code = (newClass.code || "").trim();
-    const title = (newClass.title || "").trim();
-    if (!code) return alert("Class code is required (e.g. UCS501).");
-    if (!title) return alert("Class title is required.");
-    setCreating(true);
-    try {
-      // Optionally: check uniqueness of classCode (skip for prototype or implement a check)
-      const classesRef = collection(db, "classes");
-      const docRef = await addDoc(classesRef, {
-        classCode: code,
-        name: title,
-        createdBy: authUser.email,
-        createdAt: serverTimestamp(),
-      });
-      // add faculty membership under classes/{docId}/members/{uid}
-      const memberRef = doc(db, "classes", docRef.id, "members", authUser.uid);
-      await setDoc(memberRef, {
-        uid: authUser.uid,
-        email: authUser.email,
-        role: "faculty",
-        joinedAt: serverTimestamp(),
-      });
-      // refresh list
-      await fetchMyClasses(authUser.uid);
-      setNewClass({ code: "", title: "" });
-      setActiveClassId(docRef.id);
-      alert("Class created successfully.");
-    } catch (e) {
-      console.error("create class error:", e);
-      alert("Failed to create class. See console.");
-    } finally {
-      setCreating(false);
-    }
+// Create a new class (faculty only)
+async function handleCreateClass(e) {
+  e?.preventDefault?.();
+  if (!authUser) {
+    alert("Not signed in");
+    return;
   }
+  const code = (newClass.code || "").trim();
+  const title = (newClass.title || "").trim();
+  if (!code) return alert("Class code is required (e.g. UCS501).");
+  if (!title) return alert("Class title is required.");
+  setCreating(true);
+
+  try {
+    const classesRef = collection(db, "classes");
+
+    // ✅ Create class with faculty UID in memberIds array
+    const docRef = await addDoc(classesRef, {
+      classCode: code,
+      name: title,
+      createdBy: authUser.email,
+      createdAt: serverTimestamp(),
+      facultyId: authUser.uid,       // optional metadata
+      memberIds: [authUser.uid],     // ✅ critical new field
+    });
+
+    // ✅ Add faculty membership in the members subcollection
+    const memberRef = doc(db, "classes", docRef.id, "members", authUser.uid);
+    await setDoc(memberRef, {
+      uid: authUser.uid,
+      email: authUser.email,
+      role: "faculty",
+      joinedAt: serverTimestamp(),
+    });
+
+    // Refresh list and UI
+    await fetchMyClasses(authUser.uid);
+    setNewClass({ code: "", title: "" });
+    setActiveClassId(docRef.id);
+    alert("Class created successfully.");
+  } catch (e) {
+    console.error("create class error:", e);
+    alert("Failed to create class. See console.");
+  } finally {
+    setCreating(false);
+  }
+}
+
 
   // Edit name
   async function handleEditName() {
