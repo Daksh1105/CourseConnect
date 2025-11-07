@@ -113,6 +113,7 @@ async function handleCreateClass(e) {
       createdBy: authUser.email,
       createdAt: serverTimestamp(),
       facultyId: authUser.uid,       // optional metadata
+      facultyname: authUser.displayName,
       memberIds: [authUser.uid],     // ✅ critical new field
     });
 

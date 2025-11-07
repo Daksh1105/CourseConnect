@@ -392,7 +392,7 @@ function ClassCard({ classData, onOpenClass }) {
       </div>
       <div className="flex-1 p-4">
         <p className="text-sm text-gray-600">
-          Faculty: {classData.facultyName || "N/A"}
+          Faculty: {classData.facultyname || "N/A"}
         </p>
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-3">
