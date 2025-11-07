@@ -8,11 +8,12 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged,
+  sendEmailVerification, // <-- 1. IMPORT ADDED
 } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 
 // Asset import
-import backgroundImage from '../assets/college_background.jpg'; // Adjust path if needed
+import backgroundImage from "../assets/college_background.jpg"; // Adjust path if needed
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -24,78 +25,127 @@ export default function LoginPage() {
   const [role, setRole] = useState("student");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState(""); // <-- 2. STATE ADDED
   const [isSignupMode, setIsSignupMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  
+
   // Logic (from your working version)
   // Redirect if already logged in
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) return;
-      setLoading(true);
-      try {
-        const userDoc = await getDoc(doc(db, "users", user.uid));
-        const userRole = userDoc.exists() ? userDoc.data().role : null;
-        if (userRole === "faculty") navigate("/faculty-dashboard");
-        else if (userRole === "student") navigate("/student-dashboard");
-      } catch (err) {
-        console.error(err);
-        setError("Error checking user role.");
-      } finally {
-        setLoading(false);
+      
+      // Only check role if email is verified
+      if (user.emailVerified) {
+        setLoading(true);
+        try {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          const userRole = userDoc.exists() ? userDoc.data().role : null;
+          if (userRole === "faculty") navigate("/faculty-dashboard");
+          else if (userRole === "student") navigate("/student-dashboard");
+        } catch (err) {
+          console.error(err);
+          setError("Error checking user role.");
+        } finally {
+          setLoading(false);
+        }
       }
     });
     return () => unsub();
   }, [navigate]);
+
   // Handle Signup
-async function handleSignup(e) {
-  e.preventDefault();
-  setError("");
-  if (!name.trim()) {
-    setError("Please enter your full name.");
-    return;
+  // --- 3. FUNCTION UPDATED ---
+  async function handleSignup(e) {
+    e.preventDefault();
+    setError("");
+    setSuccess(""); // Clear success message
+
+    // Your existing @thapar.edu check
+    if (!email.toLowerCase().endsWith("@thapar.edu")) {
+      setError("Access restricted. Please use a @thapar.edu email.");
+      return;
+    }
+
+    if (!name.trim()) {
+      setError("Please enter your full name.");
+      return;
+    }
+    setLoading(true);
+
+    try {
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      const user = userCredential.user;
+
+      // --- START: NEW CHANGES ---
+
+      // 1. Send the verification email
+      await sendEmailVerification(user);
+
+      // 2. Add Firestore profile (add 'emailVerified' field)
+      await setDoc(doc(db, "users", user.uid), {
+        uid: user.uid,
+        name: name.trim(),
+        email: user.email,
+        role,
+        createdAt: new Date().toISOString(),
+        emailVerified: user.emailVerified, // Good practice to store this
+      });
+
+      // 3. Sign the user out (to force them to log in after verifying)
+      await auth.signOut();
+
+      // 4. Show a success message
+      setSuccess(
+        "Signup successful! Please check your @thapar.edu email for a verification link, then sign in."
+      );
+
+      // --- END: NEW CHANGES ---
+    } catch (err) {
+      console.error("Signup Error:", err);
+      // Handle "email-already-in-use"
+      if (err.code === "auth/email-already-in-use") {
+        setError("This email is already in use. Please sign in.");
+      } else {
+        setError(err.message || "Signup failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
   }
-  setLoading(true);
-
-  try {
-    // ✅ Ensure Firebase Auth actually registers the user
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    // ✅ Add Firestore profile
-    await setDoc(doc(db, "users", user.uid), {
-      uid: user.uid,
-      name: name.trim(),
-      email: user.email,
-      role,
-      createdAt: new Date().toISOString(),
-    });
-
-    console.log("✅ User successfully registered:", user.uid);
-
-    // ✅ Force refresh of user state before navigation
-    await user.reload();
-
-    // ✅ Navigate according to role
-    if (role === "faculty") navigate("/faculty-dashboard");
-    else navigate("/student-dashboard");
-
-  } catch (err) {
-    console.error("Signup Error:", err);
-    setError(err.message || "Signup failed. Please try again.");
-  } finally {
-    setLoading(false);
-  }
-}
-
 
   // Handle Login
+  // --- 4. FUNCTION UPDATED ---
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
+    setSuccess(""); // Clear success message
+
+    // Your existing @thapar.edu check
+    if (!email.toLowerCase().endsWith("@thapar.edu")) {
+      setError("Access restricted. Please use a @thapar.edu email.");
+      return;
+    }
+
     setLoading(true);
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+
+      // --- START: NEW VERIFICATION CHECK ---
+      if (!cred.user.emailVerified) {
+        setError(
+          "Email not verified. Please check your inbox for the verification link."
+        );
+        setLoading(false);
+        return; // Stop the login
+      }
+      // --- END: NEW VERIFICATION CHECK ---
+
+      // This part is your original logic
       const userDoc = await getDoc(doc(db, "users", cred.user.uid));
       const data = userDoc.exists() ? userDoc.data() : null;
       if (!data) {
@@ -114,19 +164,25 @@ async function handleSignup(e) {
       else navigate("/student-dashboard");
     } catch (err) {
       console.error(err);
-      setError(err.message || "Login failed");
+      // Handle common login errors
+      if (
+        err.code === "auth/user-not-found" ||
+        err.code === "auth/wrong-password" ||
+        err.code === "auth/invalid-credential" // New error code
+      ) {
+        setError("Invalid email or password.");
+      } else {
+        setError(err.message || "Login failed");
+      }
     } finally {
       setLoading(false);
     }
   }
 
   // JSX
-  // NOTE: If you removed the background image, you can remove the style prop
-  // and className="bg-cover bg-center" from the main div.
   return (
     <div
       className="flex min-h-screen bg-cover bg-center relative"
-      // If your background is just white, you can delete this "style" prop
       style={{ backgroundImage: `url(${backgroundImage})` }}
     >
       {/* Logo in top left */}
@@ -139,12 +195,14 @@ async function handleSignup(e) {
         <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8">
           {/* Tabs */}
           <div className="flex border-b border-gray-200 mb-6">
+            {/* --- 6. TABSWITCH UPDATED --- */}
             <TabButton
               title="Sign In"
               isActive={!isSignupMode}
               onClick={() => {
                 setIsSignupMode(false);
                 setError("");
+                setSuccess(""); // <-- ADD THIS
               }}
             />
             <TabButton
@@ -153,6 +211,7 @@ async function handleSignup(e) {
               onClick={() => {
                 setIsSignupMode(true);
                 setError("");
+                setSuccess(""); // <-- ADD THIS
               }}
             />
           </div>
@@ -200,7 +259,7 @@ async function handleSignup(e) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full pr-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                placeholder="you@college.edu"
+                placeholder="your-email@thapar.edu"
               />
             </div>
 
@@ -208,7 +267,7 @@ async function handleSignup(e) {
               <span className="text-gray-400">
                 <LockIcon />
               </span>
-              <div className="relative w-full"> 
+              <div className="relative w-full">
                 <input
                   type={showPassword ? "text" : "password"}
                   required
@@ -217,13 +276,18 @@ async function handleSignup(e) {
                   className="w-full pr-12 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
                   placeholder="Enter password"
                 />
+                
+                {/* --- START: ICON ALIGNMENT FIX --- */}
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                  // This class uses inset-y-0 and flex to vertically center
+                  className="absolute right-4 inset-y-0 flex items-center text-gray-500 hover:text-gray-700"
                 >
                   {showPassword ? <EyeOffIcon /> : <EyeIcon />}
                 </button>
+                {/* --- END: ICON ALIGNMENT FIX --- */}
+                
               </div>
             </div>
 
@@ -247,6 +311,14 @@ async function handleSignup(e) {
                 />
               </div>
             </div>
+
+            {/* --- 5. SUCCESS/ERROR MESSAGES ADDED --- */}
+            {/* Success Message */}
+            {success && (
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                <p className="text-sm text-green-600">{success}</p>
+              </div>
+            )}
 
             {/* Error Message */}
             {error && (
@@ -279,6 +351,7 @@ async function handleSignup(e) {
 }
 
 // --- HELPER COMPONENTS ---
+// (No changes below this line)
 
 // Logo Component
 function Logo() {
@@ -293,17 +366,18 @@ function Logo() {
       >
         <path
           d="M16 0L32 8L16 16L0 8L16 0Z"
-          className="text-gray-800" // <-- CHANGED from text-white
+          className="text-gray-800"
           fill="currentColor"
         />
         <path
           d="M16 17.6L0 9.6V24L16 32L32 24V9.6L16 17.6ZM16 29.3333L2.66667 22.6667V12.1333L16 19.8667L29.3333 12.1333V22.6667L16 29.3333Z"
-          className="text-orange-500" // <-- CHANGED from text-orange-200
+          className="text-orange-500"
           fill="currentColor"
         />
       </svg>
-      {/* --- CHANGED from text-white --- */}
-      <span className="text-2xl text-gray-800 font-semibold">CourseConnect</span>
+      <span className="text-2xl text-gray-800 font-semibold">
+        CourseConnect
+      </span>
     </div>
   );
 }
