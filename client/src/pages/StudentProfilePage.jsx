@@ -20,6 +20,7 @@ import {
   where,
   serverTimestamp,
   updateDoc,
+  arrayUnion, // <-- 1. FIXED IMPORT
 } from "firebase/firestore";
 import {
   ref,
@@ -35,13 +36,11 @@ import {
 */
 
 export default function StudentProfilePage() {
-  // --- ADD LOG ---
-  console.log("ProfilePage rendering...");
-
   const navigate = useNavigate();
   const [authUser, setAuthUser] = useState(null);
-  const [profile, setProfile] = useState(null); // <-- This starts as null
+  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [joinedClasses, setJoinedClasses] = useState([]); // <-- 2. ADDED STATE
 
   // UI State
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
@@ -59,21 +58,14 @@ export default function StudentProfilePage() {
   // --- 1. CORE DATA LOADING ---
 
   useEffect(() => {
-    // --- ADD LOG ---
-    console.log("ProfilePage useEffect running...");
-
     const unsub = onAuthStateChanged(auth, (user) => {
-      // --- ADD LOG ---
-      console.log("onAuthStateChanged triggered. User:", user);
-
       if (!user) {
-        // --- ADD LOG ---
-        console.log("No user found, navigating to login...");
         navigate("/");
         return;
       }
       setAuthUser(user);
       loadUserProfile(user.uid);
+      fetchJoinedClasses(user.uid); // <-- 4. FIXED useEffect
     });
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,22 +73,15 @@ export default function StudentProfilePage() {
 
   // Load Firestore user doc
   async function loadUserProfile(uid) {
-    // --- ADD LOG ---
-    console.log("loadUserProfile started for UID:", uid);
     setLoading(true);
     try {
       const userRef = doc(db, "users", uid);
       const snap = await getDoc(userRef);
       if (snap.exists()) {
         const data = snap.data();
-         // --- ADD LOG ---
-        console.log("Profile data loaded:", data);
         setProfile(data);
         setNewName(data.name);
       } else {
-        // --- ADD LOG ---
-        console.log("User doc not found, setting default profile.");
-        // Set a default profile if one isn't in Firestore
         setProfile({
           name: auth.currentUser?.displayName || "Student",
           email: auth.currentUser?.email,
@@ -104,20 +89,32 @@ export default function StudentProfilePage() {
         });
       }
     } catch (err) {
-      console.error("loadUserProfile error:", err); // Keep error log
+      console.error("loadUserProfile error:", err);
       setError("Failed to load profile data.");
-      // --- ADD LOG ---
-      console.log("Error loading profile, setting default profile.");
-      // If loading fails, set a default profile so the page doesn't crash
       setProfile({
         name: auth.currentUser?.displayName || "Student",
         email: auth.currentUser?.email,
         role: "student"
       });
     } finally {
-      // --- ADD LOG ---
-      console.log("loadUserProfile finished, setting loading to false.");
       setLoading(false);
+    }
+  }
+
+  // --- 3. ADDED THIS ENTIRE FUNCTION ---
+  async function fetchJoinedClasses(uid) {
+    try {
+      const q = query(
+        collection(db, "classes"),
+        where("memberIds", "array-contains", uid),
+        orderBy("createdAt", "desc")
+      );
+      const classesSnap = await getDocs(q);
+      const joined = classesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setJoinedClasses(joined);
+    } catch (e) {
+      console.error("fetchJoinedClasses:", e);
+      setJoinedClasses([]);
     }
   }
 
@@ -142,7 +139,6 @@ export default function StudentProfilePage() {
     const classDoc = snap.docs[0];
     const classId = classDoc.id;
   
-    // ✅ 1. Create the member document (same as before)
     const memberRef = doc(db, "classes", classId, "members", authUser.uid);
     await setDoc(memberRef, {
       uid: authUser.uid,
@@ -152,13 +148,11 @@ export default function StudentProfilePage() {
       name: profile?.name || "Student",
     });
   
-    // ✅ 2. Add this student's UID to class.memberIds array
     await updateDoc(doc(db, "classes", classId), {
       memberIds: arrayUnion(authUser.uid),
     });
   
-    // ✅ 3. Refresh dashboard data
-    await loadAllData(authUser.uid);
+    await fetchJoinedClasses(authUser.uid); // <-- 4. FIXED FUNCTION CALL
   }
 
   // --- 3. PROFILE-SPECIFIC FUNCTIONS ---
@@ -263,23 +257,17 @@ export default function StudentProfilePage() {
 
   // --- 4. RENDER ---
 
-  // --- ADD LOG ---
-  console.log("Checking loading state:", loading, "Profile state:", profile);
-
-  if (loading || !profile) { // Added check for !profile
-    // --- ADD LOG ---
-    console.log("Rendering Loading Profile...");
+  if (loading || !profile) { 
     return <div className="flex min-h-screen items-center justify-center">Loading Profile...</div>;
   }
 
-  // --- ADD LOG ---
-  console.log("Rendering Profile Page Content...");
   return (
     <div className="flex min-h-screen bg-slate-50">
+      {/* --- 5. FIXED SIDEBAR --- */}
       <Sidebar
         isExpanded={isSidebarExpanded}
-        joinedClasses={[]}
-        onOpenClass={() => {}}
+        joinedClasses={joinedClasses}
+        onOpenClass={(classId) => navigate(`/class/${classId}`)}
       />
 
       <JoinClassModal

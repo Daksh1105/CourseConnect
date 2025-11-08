@@ -11,20 +11,27 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,      // ✅ needed for adding memberIds
-  arrayUnion,     // ✅ needed for adding to array field
+  updateDoc,
+  arrayUnion,
   where,
   serverTimestamp,
-  limit, // For announcements
+  limit,
 } from "firebase/firestore";
 
-/*
-  Student Dashboard (v3 - Hybrid Layout)
-  - Sidebar: Collapsible "mini" bar that expands on click.
-  - Header: Contains sidebar toggle, "Join" button, and profile.
-  - Main Area: Welcome message, Announcements, and Class Card grid.
-  - Modal: "Join Class" modal.
-*/
+// --- NEW: Added lucide icons for new cards ---
+import {
+  MenuIcon as MenuIconSvg,
+  PlusIcon as PlusIconSvg,
+  FolderIcon as FolderIconSvg,
+  LogOut,
+  Bell,
+  Home,
+  User,
+  Calendar,
+  Activity,
+  MessageSquare
+} from "lucide-react";
+
 
 export default function StudentDashboard() {
   const navigate = useNavigate();
@@ -33,12 +40,21 @@ export default function StudentDashboard() {
   const [joinedClasses, setJoinedClasses] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   
+  // --- NEW: State for new cards ---
+  const [upcomingTasks, setUpcomingTasks] = useState([]);
+  const [recentActivity, setRecentActivity] = useState([]);
+  
   const [loading, setLoading] = useState(true);
   const [announcementsLoading, setAnnouncementsLoading] = useState(true);
+  
+  // --- NEW: Loading states for new cards ---
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const [activityLoading, setActivityLoading] = useState(true);
   
   // UI State
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
+  const [isAnnouncementsExpanded, setIsAnnouncementsExpanded] = useState(false);
 
   // Listen for auth and load all user data
   useEffect(() => {
@@ -54,13 +70,18 @@ export default function StudentDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Chained data loading function
+  // --- MODIFIED: Chained data loading function ---
   async function loadAllData(uid) {
     setLoading(true);
     try {
       await loadUserProfile(uid);
       const classes = await fetchJoinedClasses(uid);
-      await fetchAnnouncements(classes);
+      // Fetch all data in parallel
+      await Promise.all([
+        fetchAnnouncements(classes),
+        fetchUpcomingTasks(classes),
+        fetchRecentActivity(classes)
+      ]);
     } catch (err) {
       console.error("Error loading dashboard data:", err);
     } finally {
@@ -121,7 +142,7 @@ export default function StudentDashboard() {
       const results = await Promise.all(promises);
       const allAnnouncements = results.flat();
       allAnnouncements.sort((a, b) => b.postedAt.toDate() - a.postedAt.toDate());
-      setAnnouncements(allAnnouncements.slice(0, 5)); // Get top 5 recent
+      setAnnouncements(allAnnouncements.slice(0, 5));
     } catch (e) {
       console.error("fetchAnnouncements:", e);
       setAnnouncements([]);
@@ -129,6 +150,71 @@ export default function StudentDashboard() {
       setAnnouncementsLoading(false);
     }
   }
+  
+  // --- NEW: Fetch Upcoming Tasks ---
+  async function fetchUpcomingTasks(classes) {
+    if (classes.length === 0) {
+      setUpcomingTasks([]);
+      setTasksLoading(false);
+      return;
+    }
+    setTasksLoading(true);
+    try {
+      const today = new Date();
+      const promises = classes.map(cls => {
+        const tasksQuery = query(
+          collection(db, "classes", cls.id, "tasks"), // <-- ASSUMES 'tasks' collection
+          where("dueDate", ">=", today), // <-- Only future tasks
+          orderBy("dueDate", "asc"),
+          limit(3)
+        );
+        return getDocs(tasksQuery).then(snap => 
+          snap.docs.map(d => ({ ...d.data(), id: d.id, className: cls.name }))
+        );
+      });
+      const results = await Promise.all(promises);
+      const allTasks = results.flat();
+      allTasks.sort((a, b) => a.dueDate.toDate() - b.dueDate.toDate());
+      setUpcomingTasks(allTasks.slice(0, 3)); // Get top 3 overall
+    } catch (e) {
+      console.error("fetchUpcomingTasks:", e);
+      setUpcomingTasks([]);
+    } finally {
+      setTasksLoading(false);
+    }
+  }
+  
+  // --- NEW: Fetch Recent Activity (from Q&A) ---
+  async function fetchRecentActivity(classes) {
+    if (classes.length === 0) {
+      setRecentActivity([]);
+      setActivityLoading(false);
+      return;
+    }
+    setActivityLoading(true);
+    try {
+      const promises = classes.map(cls => {
+        const activityQuery = query(
+          collection(db, "classes", cls.id, "questions"), // <-- ASSUMES 'questions' collection
+          orderBy("postedAt", "desc"),
+          limit(3)
+        );
+        return getDocs(activityQuery).then(snap => 
+          snap.docs.map(d => ({ ...d.data(), id: d.id, className: cls.name }))
+        );
+      });
+      const results = await Promise.all(promises);
+      const allActivity = results.flat();
+      allActivity.sort((a, b) => b.postedAt.toDate() - a.postedAt.toDate());
+      setRecentActivity(allActivity.slice(0, 3)); // Get top 3 overall
+    } catch (e) {
+      console.error("fetchRecentActivity:", e);
+      setRecentActivity([]);
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
 
   // Navigate to class board
   function openClass(classId) {
@@ -149,7 +235,6 @@ export default function StudentDashboard() {
     const classDoc = snap.docs[0];
     const classId = classDoc.id;
   
-    // ✅ 1. Create the member document (same as before)
     const memberRef = doc(db, "classes", classId, "members", authUser.uid);
     await setDoc(memberRef, {
       uid: authUser.uid,
@@ -159,16 +244,14 @@ export default function StudentDashboard() {
       name: profile?.name || "Student",
     });
   
-    // ✅ 2. Add this student's UID to class.memberIds array
     await updateDoc(doc(db, "classes", classId), {
       memberIds: arrayUnion(authUser.uid),
     });
   
-    // ✅ 3. Refresh dashboard data
+    // Refresh all dashboard data
     await loadAllData(authUser.uid);
   }
   
-
   // Logout
   async function handleLogout() {
     await signOut(auth);
@@ -180,7 +263,7 @@ export default function StudentDashboard() {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50"> {/* <-- THIS IS THE CHANGE */}
+    <div className="min-h-screen bg-slate-100">
       <Sidebar
         isExpanded={isSidebarExpanded}
         joinedClasses={joinedClasses}
@@ -193,52 +276,71 @@ export default function StudentDashboard() {
         onJoin={handleJoinByCode}
       />
 
-      {/* --- MAIN CONTENT (Header + Dashboard) --- */}
-      <div className={`flex-1 flex flex-col transition-all duration-300 ${isSidebarExpanded ? 'ml-72' : 'ml-20'}`}>
-        <Header
-          profile={profile}
-          onLogout={handleLogout}
-          onToggleSidebar={() => setIsSidebarExpanded(!isSidebarExpanded)}
-          onOpenJoinModal={() => setIsJoinModalOpen(true)}
-        />
+      <RightAnnouncementsBar
+        isExpanded={isAnnouncementsExpanded} 
+        announcements={announcements}
+        loading={announcementsLoading}
+      />
+      
+      <Header
+        profile={profile}
+        onLogout={handleLogout}
+        onToggleSidebar={() => setIsSidebarExpanded(!isSidebarExpanded)}
+        onOpenJoinModal={() => setIsJoinModalOpen(true)}
+        onToggleAnnouncements={() => setIsAnnouncementsExpanded(!isAnnouncementsExpanded)}
+        isSidebarExpanded={isSidebarExpanded}
+        isAnnouncementsExpanded={isAnnouncementsExpanded}
+      />
         
-        {/* --- DASHBOARD: Welcome, Announcements, Grid --- */}
-        <main className="flex-1 p-6 lg:p-8"> {/* <-- Removed background color here */}
-          <DashboardContent
-            profileName={profile?.name}
-            joinedClasses={joinedClasses}
-            onOpenClass={openClass}
-            announcements={announcements}
-            loadingAnnouncements={announcementsLoading}
-          />
-        </main>
-      </div>
+      <main 
+        className={`p-6 lg:p-8 transition-all duration-300 mt-16 ${isSidebarExpanded ? 'ml-72' : 'ml-20'} ${isAnnouncementsExpanded ? 'mr-96' : 'mr-0'}`}
+      >
+        <DashboardContent
+          profileName={profile?.name}
+          joinedClasses={joinedClasses}
+          onOpenClass={openClass}
+          upcomingTasks={upcomingTasks}
+          tasksLoading={tasksLoading}
+          recentActivity={recentActivity}
+          activityLoading={activityLoading}
+        />
+      </main>
     </div>
   );
 }
 
 // --- Sub-Components ---
 
-function Header({ profile, onLogout, onToggleSidebar, onOpenJoinModal }) {
+function Header({ profile, onLogout, onToggleSidebar, onOpenJoinModal, onToggleAnnouncements, isSidebarExpanded, isAnnouncementsExpanded }) {
   const profileInitial = profile?.name ? profile.name[0].toUpperCase() : "?";
 
   return (
-    <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 md:px-6">
+    <header 
+      className={`fixed top-0 z-20 h-16 flex flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 md:px-6 transition-all duration-300 ${isSidebarExpanded ? 'left-72' : 'left-20'} ${isAnnouncementsExpanded ? 'right-96' : 'right-0'}`}
+    >
       <div className="flex items-center gap-3">
         <button
           onClick={onToggleSidebar}
           className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
         >
-          <MenuIcon />
+          <MenuIconSvg className="h-6 w-6" />
         </button>
         <span className="text-xl font-medium text-gray-700">CourseConnect</span>
       </div>
       <div className="flex items-center gap-3">
+        
+        <button
+          onClick={onToggleAnnouncements}
+          className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+        >
+          <Bell className="h-6 w-6" />
+        </button>
+
         <button
           onClick={onOpenJoinModal}
           className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
         >
-          <PlusIcon />
+          <PlusIconSvg className="h-6 w-6" />
         </button>
         <div className="relative">
           <button className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-600 text-sm font-semibold text-white">
@@ -249,7 +351,7 @@ function Header({ profile, onLogout, onToggleSidebar, onOpenJoinModal }) {
           onClick={onLogout} 
           className="ml-2 rounded-md bg-white px-3 py-2 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
         >
-          Logout
+          <LogOut className="h-4 w-4" />
         </button>
       </div>
     </header>
@@ -259,40 +361,43 @@ function Header({ profile, onLogout, onToggleSidebar, onOpenJoinModal }) {
 function Sidebar({ isExpanded, joinedClasses, onOpenClass }) {
   return (
     <aside 
-      className={`fixed top-0 left-0 z-40 h-screen flex-col bg-white p-4 shadow-lg transition-all duration-300 ${
+      className={`fixed top-0 left-0 z-40 h-screen flex flex-col bg-gray-900 p-4 shadow-lg transition-all duration-300 ${
         isExpanded ? 'w-72' : 'w-20'
       }`}
     >
       <div className="flex h-12 items-center justify-center">
-        {/* Show full logo or just icon */}
         <Logo isExpanded={isExpanded} />
       </div>
       
       <nav className="mt-8 space-y-2">
         <SidebarLink
+          to="/student-dashboard"
+          icon={<Home className="h-6 w-6" />}
+          text="Dashboard"
+          isExpanded={isExpanded}
+        />
+        <SidebarLink
           to="/profile"
-          icon={<ProfileIcon />}
+          icon={<User className="h-6 w-6" />}
           text="My Profile"
           isExpanded={isExpanded}
         />
-        {/* Add other links here (e.g., Calendar) */}
       </nav>
       
-      {/* "My Classes" list, only shows when expanded */}
-      <div className={`mt-8 flex-1 border-t pt-6 overflow-y-auto ${!isExpanded && 'hidden'}`}>
-        <h3 className="mb-3 text-xs font-semibold uppercase text-gray-500">My Classes</h3>
+      <div className={`mt-8 flex-1 border-t border-gray-700 pt-6 overflow-y-auto ${!isExpanded && 'hidden'}`}>
+        <h3 className="mb-3 text-xs font-semibold uppercase text-gray-400">My Classes</h3>
         <div className="space-y-2">
           {joinedClasses.length === 0 && (
-            <p className="text-sm text-gray-500">No classes joined.</p>
+            <p className="text-sm text-gray-400">No classes joined.</p>
           )}
           {joinedClasses.map((c) => (
             <div 
               key={c.id} 
               onClick={() => onOpenClass(c.id)}
-              className="cursor-pointer rounded-md p-3 hover:bg-gray-50"
+              className="cursor-pointer rounded-md p-3 hover:bg-gray-800"
             >
-              <div className="font-semibold text-gray-800 truncate">{c.name || "Untitled Class"}</div>
-              <div className="text-sm text-gray-500">{c.classCode}</div>
+              <div className="font-semibold text-white truncate">{c.name || "Untitled Class"}</div>
+              <div className="text-sm text-gray-400">{c.classCode}</div>
             </div>
           ))}
         </div>
@@ -301,12 +406,11 @@ function Sidebar({ isExpanded, joinedClasses, onOpenClass }) {
   );
 }
 
-// Helper component for links in the sidebar
 function SidebarLink({ to, icon, text, isExpanded }) {
   return (
     <Link 
       to={to} 
-      className={`flex items-center gap-4 rounded-md p-3 text-gray-700 hover:bg-gray-100 ${
+      className={`flex items-center gap-4 rounded-md p-3 text-gray-300 hover:bg-gray-700 hover:text-white ${
         !isExpanded && 'justify-center'
       }`}
     >
@@ -316,44 +420,25 @@ function SidebarLink({ to, icon, text, isExpanded }) {
   );
 }
 
-function DashboardContent({ profileName, joinedClasses, onOpenClass, announcements, loadingAnnouncements }) {
+function DashboardContent({ profileName, joinedClasses, onOpenClass, upcomingTasks, tasksLoading, recentActivity, activityLoading }) {
+  
+  // Helper function to format dates
+  const formatDueDate = (date) => {
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
   return (
     <div className="space-y-8">
-      {/* --- 1. Welcome Message --- */}
-      <h1 className="text-3xl font-bold text-gray-900">
-        Welcome back, {profileName || "Student"}!
-      </h1>
       
-      {/* --- 2. Announcements --- */}
-      <div>
-        <h2 className="text-2xl font-semibold text-gray-900">Recent Announcements</h2>
-        <div className="mt-4 flow-root">
-          {loadingAnnouncements && <p className="text-gray-500">Loading announcements...</p>}
-          {!loadingAnnouncements && announcements.length === 0 && (
-            <p className="text-sm text-gray-500">No new announcements from your classes.</p>
-          )}
-          {!loadingAnnouncements && announcements.length > 0 && (
-            <ul className="space-y-4">
-              {announcements.map((ann) => (
-                <li key={ann.id} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-800">
-                      {ann.className || "Class"}
-                    </span>
-                    <span className="text-sm text-gray-500">
-                      {ann.postedAt?.toDate().toLocaleDateString() || "..."}
-                    </span>
-                  </div>
-                  <h3 className="mt-3 text-lg font-semibold text-gray-900">{ann.title || "No Title"}</h3>
-                  <p className="mt-1 text-sm text-gray-600 line-clamp-2">{ann.content || "No content."}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      <div className="bg-gray-200 rounded-lg shadow-sm p-6">
+        <h1 className="text-3xl font-bold text-gray-800 text-center">
+          Welcome back, {profileName || "Student"}!
+        </h1>
       </div>
       
-      {/* --- 3. Class Grid --- */}
       <div>
         <h2 className="text-2xl font-semibold text-gray-900">My Classes</h2>
         {joinedClasses.length === 0 ? (
@@ -362,14 +447,111 @@ function DashboardContent({ profileName, joinedClasses, onOpenClass, announcemen
             <p>Click the "+" button in the header to get started.</p>
           </div>
         ) : (
-          <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="flex space-x-6 overflow-x-auto py-4">
             {joinedClasses.map((c) => (
-              <ClassCard key={c.id} classData={c} onOpenClass={onOpenClass} />
+              <div key={c.id} className="w-80 flex-shrink-0">
+                <ClassCard classData={c} onOpenClass={onOpenClass} />
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="p-4 border-b border-gray-200 flex items-center gap-3">
+            <Calendar className="w-5 h-5 text-orange-600" />
+            <h3 className="text-lg font-semibold text-gray-900">Upcoming Deadlines</h3>
+          </div>
+          <div className="p-4 space-y-4">
+            {tasksLoading ? (
+              <p className="text-sm text-gray-500">Loading tasks...</p>
+            ) : upcomingTasks.length > 0 ? (
+              upcomingTasks.map(task => (
+                <div key={task.id} className="flex items-center gap-3">
+                  <div className="w-5 h-5 rounded-full border-2 border-gray-300 flex-shrink-0"></div>
+                  <div>
+                    <p className="font-medium text-gray-800">{task.title}</p>
+                    <p className="text-sm text-gray-500">
+                      {task.className} • Due {formatDueDate(task.dueDate.toDate())}
+                    </p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-gray-500">No upcoming deadlines. You're all caught up!</p>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="p-4 border-b border-gray-200 flex items-center gap-3">
+            <Activity className="w-5 h-5 text-orange-600" />
+            <h3 className="text-lg font-semibold text-gray-900">Recent Activity</h3>
+          </div>
+          <div className="p-4 space-y-4">
+            {activityLoading ? (
+              <p className="text-sm text-gray-500">Loading activity...</p>
+            ) : recentActivity.length > 0 ? (
+              recentActivity.map(activity => (
+                <div key={activity.id} className="flex items-center gap-3">
+                  <div className="p-2 bg-gray-100 rounded-full">
+                    <MessageSquare className="w-4 h-4 text-gray-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-800">
+                      <span className="font-medium">{activity.authorName || 'Someone'}</span> asked a question in <span className="font-medium">{activity.className}</span>
+                    </p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-gray-500">No recent activity in your classes.</p>
+            )}
+          </div>
+        </div>
+
+      </div>
     </div>
+  );
+}
+
+function RightAnnouncementsBar({ isExpanded, announcements, loadingAnnouncements }) {
+  return (
+    <aside 
+      className={`fixed top-0 z-30 h-screen w-96 flex-col border-l border-gray-700 bg-gray-900 p-6 shadow-lg transition-all duration-300 ${
+        isExpanded ? 'right-0' : '-right-96' 
+      }`}
+    >
+      <div className="flex h-16 items-center border-b border-gray-700 pb-6">
+        <h2 className="text-2xl font-semibold text-white">Recent Announcements</h2>
+      </div>
+      <div className="mt-6 flow-root overflow-y-auto h-[calc(100vh-100px)]">
+        {loadingAnnouncements && <p className="text-gray-400">Loading announcements...</p>}
+        {!loadingAnnouncements && announcements.length === 0 && (
+          <p className="text-sm text-gray-400">No new announcements from your classes.</p>
+        )}
+        {!loadingAnnouncements && announcements.length > 0 && (
+          <ul className="space-y-4">
+            {announcements.map((ann) => (
+              <li key={ann.id} className="rounded-lg border border-gray-700 bg-gray-800 p-4 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-800">
+                    {ann.className || "Class"}
+                  </span>
+                  <span className="text-sm text-gray-400">
+                    {ann.postedAt?.toDate().toLocaleDateString() || "..."}
+                  </span>
+                </div>
+                <h3 className="mt-3 text-lg font-semibold text-white">{ann.title || "No Title"}</h3>
+                <p className="mt-1 text-sm text-gray-300 line-clamp-2">{ann.content || "No content."}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -387,16 +569,16 @@ function ClassCard({ classData, onOpenClass }) {
         className={`relative h-32 w-full p-4 text-white cursor-pointer ${color}`}
       >
         <h3 className="text-2xl font-semibold truncate">{classData.name || "Untitled"}</h3>
-        <p className="text-sm text-blue-50">{classData.classCode}</p>
-        {/* You can add faculty avatar here if available */}
+        <p className="text-sm opacity-90">{classData.classCode}</p>
       </div>
       <div className="flex-1 p-4">
         <p className="text-sm text-gray-600">
+          {/* --- ✅ FIX: Changed to lowercase 'facultyname' --- */}
           Faculty: {classData.facultyname || "N/A"}
         </p>
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-3">
-        <button className="rounded-full p-2 text-gray-500 hover:bg-gray-100"><FolderIcon /></button>
+        <button className="rounded-full p-2 text-gray-500 hover:bg-gray-100"><FolderIconSvg className="h-5 w-5" /></button>
         <button className="rounded-full p-2 text-gray-500 hover:bg-gray-100"><OptionsIcon /></button>
       </div>
     </div>
@@ -471,7 +653,6 @@ function JoinClassModal({ isOpen, onClose, onJoin }) {
 
 // --- SVG Icons ---
 
-// This is your logo from the login page, adapted for the sidebar
 function Logo({ isExpanded }) {
   return (
     <div className="flex items-center gap-2">
@@ -485,7 +666,7 @@ function Logo({ isExpanded }) {
       >
         <path
           d="M16 0L32 8L16 16L0 8L16 0Z"
-          className="text-gray-800"
+          className="text-white"
           fill="currentColor"
         />
         <path
@@ -494,34 +675,10 @@ function Logo({ isExpanded }) {
           fill="currentColor"
         />
       </svg>
-      <span className={`text-2xl font-semibold text-gray-800 ${!isExpanded && 'hidden'}`}>
+      <span className={`text-2xl font-semibold text-white ${!isExpanded && 'hidden'}`}>
         CourseConnect
       </span>
     </div>
-  );
-}
-
-function MenuIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
-    </svg>
   );
 }
 
@@ -533,11 +690,13 @@ function OptionsIcon() {
   );
 }
 
-
-function ProfileIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-6 w-6">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
-    </svg>
-  );
-}
+// Renamed icons to avoid conflicts
+const MenuIcon = MenuIconSvg;
+const PlusIcon = PlusIconSvg;
+const FolderIcon = FolderIconSvg;
+const ProfileIcon = User;
+const HomeIcon = Home;
+const BellIcon = Bell;
+const CalendarIcon = Calendar;
+const ActivityIcon = Activity;
+const MessageSquareIcon = MessageSquare;

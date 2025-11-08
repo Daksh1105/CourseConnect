@@ -16,16 +16,6 @@ import {
   updateDoc,
 } from "firebase/firestore";
 
-/*
- Dashboard.jsx
- - Shows  name at top (fetched from users collection)
- - Profile section with name + email and "Edit name"
- - Create a class (classCode + title). On create, also add member doc under classes/{id}/members/{uid} with role 'faculty'
- - Lists only classes where faculty is a member (classes/{id}/members/{uid})
- - Clicking a class navigates to /class/:classId (ClassBoard)
- - Does NOT include post/answer/resource/analytics UI here (that belongs to ClassBoard)
-*/
-
 export default function FacultyDashboard() {
   const navigate = useNavigate();
 
@@ -117,7 +107,7 @@ export default function FacultyDashboard() {
       const docRef = await addDoc(classesRef, {
         classCode: code,
         name: title,
-        facultyName: profile?.name || "Faculty", // <-- This is the correct line
+        facultyname: profile?.name || "Faculty", // <-- ✅ FIX: Changed to lowercase 'facultyname'
         createdBy: authUser.email,
         createdAt: serverTimestamp(),
         facultyId: authUser.uid, // optional metadata
@@ -146,8 +136,8 @@ export default function FacultyDashboard() {
     }
   }
 
-  // --- ❌ DELETED DUPLICATE BLOCK FROM HERE ❌ ---
-  
+  // --- ✅ FIX: REMOVED THE DUPLICATED CODE BLOCK ---
+
   // Edit name
   async function handleEditName() {
     if (!authUser) return;
@@ -377,4 +367,4 @@ export default function FacultyDashboard() {
       </div>
     </div>
   );
-} // <-- This final bracket should no longer be red
+}
