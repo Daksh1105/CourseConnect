@@ -1,7 +1,7 @@
 // src/pages/FacultyDashboard.jsx
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import firebaseApp, { auth, db } from "../firebase";
+import { auth, db } from "../firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
   collection,
@@ -14,7 +14,42 @@ import {
   setDoc,
   serverTimestamp,
   updateDoc,
+  limit, 
+  getCountFromServer, 
 } from "firebase/firestore";
+
+// --- Shadcn/ui Imports ---
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+// --- Lucide React Imports ---
+import {
+  LogOut,
+  PenSquare,
+  PlusCircle,
+  BookMarked,
+  LayoutDashboard,
+  Users,      
+  BookCopy,   
+  FileText,   
+  Bell, 
+  MessageSquare, 
+} from "lucide-react";
 
 export default function FacultyDashboard() {
   const navigate = useNavigate();
@@ -28,6 +63,13 @@ export default function FacultyDashboard() {
   const [newClass, setNewClass] = useState({ code: "", title: "" });
 
   const [loading, setLoading] = useState(true);
+  
+  // --- NEW: State for stats and feeds ---
+  const [totalStudents, setTotalStudents] = useState(0);
+  const [totalResources, setTotalResources] = useState(0);
+  const [recentAnnouncements, setRecentAnnouncements] = useState([]);
+  const [recentQuestions, setRecentQuestions] = useState([]);
+  const [loadingStats, setLoadingStats] = useState(true);
 
   // Listen auth and load profile + classes
   useEffect(() => {
@@ -37,8 +79,11 @@ export default function FacultyDashboard() {
         return;
       }
       setAuthUser(u);
+      setLoading(true);
       await loadUserProfile(u.uid);
-      await fetchMyClasses(u.uid);
+      const classes = await fetchMyClasses(u.uid);
+      // After classes are fetched, fetch all related stats
+      await fetchDashboardData(u.uid, classes); 
       setLoading(false);
     });
     return () => unsub();
@@ -64,28 +109,89 @@ export default function FacultyDashboard() {
     }
   }
 
-  // Fetch classes where classes/{id}/members/{uid} exists
+  // Fetch classes and calculate total students
   async function fetchMyClasses(uid) {
     try {
       const classesSnap = await getDocs(
         query(collection(db, "classes"), orderBy("createdAt", "desc"))
       );
       const joined = [];
+      const allMemberIds = new Set();
+
       for (const c of classesSnap.docs) {
         const memberRef = doc(db, "classes", c.id, "members", uid);
         const memberSnap = await getDoc(memberRef);
         if (memberSnap.exists()) {
-          joined.push({ id: c.id, ...c.data() });
+          const classData = c.data();
+          joined.push({ id: c.id, ...classData });
+          // Add all members to the Set for counting
+          classData.memberIds?.forEach(id => allMemberIds.add(id));
         }
       }
+      
+      allMemberIds.delete(uid); // Remove the faculty member from the count
+      setTotalStudents(allMemberIds.size); // Set total unique students
+      
       setMyClasses(joined);
       if (joined.length > 0 && !activeClassId)
         setActiveClassId(joined[0].id);
+        
+      return joined; // Return for next function
     } catch (e) {
       console.error("fetchMyClasses:", e);
       setMyClasses([]);
+      return [];
     }
   }
+  
+  // --- NEW: Function to fetch all dashboard card data ---
+  async function fetchDashboardData(uid, classes) {
+    if (classes.length === 0) {
+      setLoadingStats(false);
+      return;
+    }
+    
+    setLoadingStats(true);
+    try {
+      // 1. Fetch recent announcements
+      const annPromises = classes.map(cls => 
+        getDocs(query(collection(db, "classes", cls.id, "announcements"), orderBy("postedAt", "desc"), limit(2)))
+      );
+      const annSnapshots = await Promise.all(annPromises);
+      const allAnnouncements = annSnapshots.flatMap(snap => snap.docs.map(d => d.data()));
+      allAnnouncements.sort((a, b) => b.postedAt.toDate() - a.postedAt.toDate());
+      setRecentAnnouncements(allAnnouncements.slice(0, 3));
+
+      // 2. Fetch recent questions
+      const qPromises = classes.map(cls => 
+        getDocs(query(collection(db, "classes", cls.id, "questions"), orderBy("postedAt", "desc"), limit(2)))
+      );
+      const qSnapshots = await Promise.all(qPromises);
+      const allQuestions = qSnapshots.flatMap(snap => snap.docs.map(d => d.data()));
+      allQuestions.sort((a, b) => b.postedAt.toDate() - a.postedAt.toDate());
+      setRecentQuestions(allQuestions.slice(0, 3));
+
+      // 3. Count total resources
+      let resourceCount = 0;
+      const resourcePromises = [];
+      classes.forEach(cls => {
+        resourcePromises.push(getCountFromServer(collection(db, "classes", cls.id, "tasks")));
+        resourcePromises.push(getCountFromServer(collection(db, "classes", cls.id, "questions")));
+        // Add more collections here as you build them (e.g., 'ppts', 'syllabus')
+      });
+      const counts = await Promise.all(resourcePromises);
+      counts.forEach(snap => {
+        resourceCount += snap.data().count;
+      });
+      setTotalResources(resourceCount);
+
+    } catch (err) {
+      console.error("Error fetching dashboard data:", err);
+    } finally {
+      setLoadingStats(false);
+    }
+  }
+
 
   // Create a new class (faculty only)
   async function handleCreateClass(e) {
@@ -103,31 +209,31 @@ export default function FacultyDashboard() {
     try {
       const classesRef = collection(db, "classes");
 
-      // ✅ Create class with faculty UID in memberIds array
       const docRef = await addDoc(classesRef, {
         classCode: code,
         name: title,
-        facultyname: profile?.name || "Faculty", // <-- ✅ FIX: Changed to lowercase 'facultyname'
+        facultyname: profile?.name || "Faculty", // Using lowercase to match your fix
         createdBy: authUser.email,
         createdAt: serverTimestamp(),
-        facultyId: authUser.uid, // optional metadata
-        memberIds: [authUser.uid], // ✅ critical new field
+        facultyId: authUser.uid,
+        memberIds: [authUser.uid],
       });
 
-      // ✅ Add faculty membership in the members subcollection
       const memberRef = doc(db, "classes", docRef.id, "members", authUser.uid);
       await setDoc(memberRef, {
         uid: authUser.uid,
         email: authUser.email,
         role: "faculty",
         joinedAt: serverTimestamp(),
+        name: profile?.name || "Faculty", 
       });
 
-      // Refresh list and UI
-      await fetchMyClasses(authUser.uid);
+      // Manually add the new class to state to avoid a full re-fetch
+      const newClassData = { id: docRef.id, classCode: code, name: title, facultyname: profile?.name || "Faculty" };
+      setMyClasses([newClassData, ...myClasses]);
       setNewClass({ code: "", title: "" });
       setActiveClassId(docRef.id);
-      alert("Class created successfully.");
+      
     } catch (e) {
       console.error("create class error:", e);
       alert("Failed to create class. See console.");
@@ -135,8 +241,6 @@ export default function FacultyDashboard() {
       setCreating(false);
     }
   }
-
-  // --- ✅ FIX: REMOVED THE DUPLICATED CODE BLOCK ---
 
   // Edit name
   async function handleEditName() {
@@ -147,9 +251,7 @@ export default function FacultyDashboard() {
     if (!trimmed) return alert("Name cannot be empty.");
     try {
       const userRef = doc(db, "users", authUser.uid);
-      // If doc exists update, otherwise create
       await updateDoc(userRef, { name: trimmed }).catch(async () => {
-        // if update fails (doc missing) then setDoc to create
         await setDoc(userRef, {
           uid: authUser.uid,
           name: trimmed,
@@ -159,7 +261,6 @@ export default function FacultyDashboard() {
         });
       });
       setProfile((prev) => ({ ...(prev || {}), name: trimmed }));
-      alert("Name updated.");
     } catch (e) {
       console.error("update name error:", e);
       alert("Failed to update name.");
@@ -177,194 +278,247 @@ export default function FacultyDashboard() {
     navigate("/");
   }
 
-  if (loading) return <div style={{ padding: 20 }}>Loading...</div>;
+  // --- NEW: Stat Card Component ---
+  function StatCard({ title, value, icon, color, loading }) {
+    return (
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-sm font-medium">{title}</CardTitle>
+          {React.cloneElement(icon, { className: `h-4 w-4 ${color}` })}
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+             <div className="h-8 w-12 bg-gray-200 rounded animate-pulse"></div>
+          ) : (
+             <div className="text-2xl font-bold">{value}</div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (loading) return <div className="flex min-h-screen items-center justify-center">Loading...</div>;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        padding: 20,
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
-        <div>
-          <h1 style={{ margin: 0 }}>{profile?.name || authUser?.email}</h1>
-          <div style={{ color: "#6b7280", fontSize: 13 }}>
-            {profile?.role || "faculty"}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button
-            onClick={handleLogout}
-            style={{ padding: "8px 12px", borderRadius: 8 }}
-          >
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <div
-        style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 20 }}
-      >
-        {/* Left: Profile + Create Class + My Classes */}
-        <aside
-          style={{
-            background: "#fff",
-            padding: 16,
-            borderRadius: 8,
-            boxShadow: "0 6px 20px rgba(15,23,42,0.06)",
-          }}
-        >
-          {/* Profile */}
-          <div style={{ marginBottom: 18 }}>
-            <h3 style={{ margin: "0 0 8px 0" }}>Profile</h3>
-            <div style={{ color: "#111827" }}>
-              <div style={{ fontWeight: 700 }}>{profile?.name || "-"}</div>
-              <div style={{ fontSize: 13, color: "#6b7280" }}>
-                {authUser?.email}
-              </div>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <button
-                onClick={handleEditName}
-                style={{ padding: "6px 10px", borderRadius: 6 }}
-              >
-                Edit name
-              </button>
-            </div>
-          </div>
-
-          {/* Create Class */}
-          <div style={{ marginBottom: 18 }}>
-            <h3 style={{ margin: "0 0 8px 0" }}>Create Class</h3>
-            <form
-              onSubmit={handleCreateClass}
-              style={{ display: "flex", flexDirection: "column", gap: 8 }}
-            >
-              <input
-                value={newClass.code}
-                onChange={(e) =>
-                  setNewClass({ ...newClass, code: e.target.value })
-                }
-                placeholder="Class Code (e.g. UCS501)"
-                style={{
-                  padding: 8,
-                  borderRadius: 6,
-                  border: "1px solid #e5e7eb",
-                }}
-              />
-              <input
-                value={newClass.title}
-                onChange={(e) =>
-                  setNewClass({ ...newClass, title: e.target.value })
-                }
-                placeholder="Class Title (e.g. Software Engineering)"
-                style={{
-                  padding: 8,
-                  borderRadius: 6,
-                  border: "1px solid #e5e7eb",
-                }}
-              />
-              <button
-                type="submit"
-                disabled={creating}
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 6,
-                  background: "#0ea5a4",
-                  color: "#fff",
-                  border: "none",
-                }}
-              >
-                {creating ? "Creating..." : "Create Class"}
-              </button>
-            </form>
-          </div>
-
-          {/* My Classes */}
+    <TooltipProvider> {/* Added for Tooltip */}
+      <div className="min-h-screen bg-slate-100 p-6 lg:p-8">
+        {/* --- Header --- */}
+        <header className="flex justify-between items-center mb-6">
           <div>
-            <h3 style={{ margin: "0 0 8px 0" }}>My Classes</h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {myClasses.length === 0 && (
-                <div style={{ color: "#6b7280" }}>
-                  You are not a member of any classes yet.
-                </div>
-              )}
-              {myClasses.map((c) => (
-                <div
-                  key={c.id}
-                  onClick={() => openClass(c.id)}
-                  style={{
-                    padding: 10,
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background:
-                      activeClassId === c.id ? "#eef2ff" : "transparent",
-                    border:
-                      activeClassId === c.id
-                        ? "1px solid #c7d2fe"
-                        : "1px solid #f3f4f6",
-                  }}
-                >
-                  <div style={{ fontWeight: 700 }}>
-                    {c.name || "Untitled Class"}
+            <h1 className="text-3xl font-bold text-gray-900">
+              {profile?.name || authUser?.email}
+            </h1>
+            <p className="text-gray-500 capitalize">
+              {profile?.role || "faculty"} Dashboard
+            </p>
+          </div>
+          <Button variant="outline" onClick={handleLogout}>
+            <LogOut className="w-4 h-4 mr-2" />
+            Logout
+          </Button>
+        </header>
+
+        {/* --- MODIFIED: Stat Cards Grid --- */}
+        <div className="grid gap-6 md:grid-cols-3 mb-6">
+          <StatCard 
+            title="Total Classes" 
+            value={myClasses.length} // Real data
+            icon={<BookCopy />}
+            color="text-orange-600"
+            loading={loading}
+          />
+          <StatCard 
+            title="Total Students" 
+            value={totalStudents} // Real data
+            icon={<Users />}
+            color="text-blue-600"
+            loading={loadingStats}
+          />
+          <StatCard 
+            title="Total Resources" 
+            value={totalResources} // Real data
+            icon={<FileText />}
+            color="text-green-600"
+            loading={loadingStats}
+          />
+        </div>
+        
+        {/* --- Main 2-Column Layout --- */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* --- Left Column --- */}
+          <aside className="lg:col-span-1 space-y-6">
+            
+            {/* Profile Card */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Profile</CardTitle>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon" onClick={handleEditName} className="text-gray-500 hover:text-orange-600">
+                      <PenSquare className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Edit Name</p>
+                  </TooltipContent>
+                </Tooltip>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-4">
+                  <Avatar>
+                    <AvatarImage src={profile?.photoURL} alt={profile?.name} />
+                    <AvatarFallback className="bg-orange-100 text-orange-600">
+                      {profile?.name ? profile.name[0].toUpperCase() : "F"}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <div className="font-semibold">{profile?.name || "Faculty User"}</div>
+                    <div className="text-sm text-gray-500">{authUser?.email}</div>
                   </div>
-                  {c.classCode && (
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      {c.classCode}
-                    </div>
-                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+              </CardContent>
+            </Card>
+            
+            {/* Create Class Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <PlusCircle className="w-5 h-5 text-orange-600" />
+                  Create New Class
+                </CardTitle>
+              </CardHeader>
+              <form onSubmit={handleCreateClass}>
+                <CardContent className="space-y-4">
+                  <Input
+                    value={newClass.title}
+                    onChange={(e) =>
+                      setNewClass({ ...newClass, title: e.target.value })
+                    }
+                    placeholder="Class Title (e.g. Machine Learning)"
+                  />
+                  <Input
+                    value={newClass.code}
+                    onChange={(e) =>
+                      setNewClass({ ...newClass, code: e.target.value })
+                    }
+                    placeholder="Class Code (e.g. UCS501)"
+                  />
+                </CardContent>
+                <CardFooter>
+                  <Button type="submit" disabled={creating} className="w-full bg-orange-600 hover:bg-orange-700">
+                    {creating ? "Creating..." : "Create Class"}
+                  </Button>
+                </CardFooter>
+              </form>
+            </Card>
 
-        {/* Main content: instructions, nothing else (ClassBoard contains interactions) */}
-        <main
-          style={{
-            background: "#fff",
-            padding: 20,
-            borderRadius: 8,
-            boxShadow: "0 6px 20px rgba(15,23,42,0.06)",
-          }}
-        >
-          <h2 style={{ marginTop: 0 }}>Faculty Dashboard</h2>
-          <p style={{ color: "#6b7280" }}>
-            Create a class using a unique class code and a title. Click a class
-            from the left to open its ClassBoard where you can manage
-            questions, resources, answers and view analytics.
-          </p>
+            {/* My Classes Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <BookMarked className="w-5 h-5 text-orange-600" />
+                  My Classes
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {myClasses.length === 0 && (
+                    <p className="text-sm text-gray-500 text-center">
+                      You haven't created any classes yet.
+                    </p>
+                  )}
+                  {myClasses.map((c) => (
+                    <div
+                      key={c.id}
+                      onClick={() => {
+                        setActiveClassId(c.id);
+                        openClass(c.id);
+                      }}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        activeClassId === c.id
+                          ? "bg-orange-100 border-orange-200 border"
+                          : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="font-semibold text-gray-900">{c.name || "Untitled Class"}</div>
+                      <div className="text-sm text-gray-500">{c.classCode}</div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </aside>
 
-          <div style={{ marginTop: 18 }}>
-            <h3 style={{ marginBottom: 8 }}>Quick demo tips</h3>
-            <ul style={{ color: "#374151" }}>
-              <li>
-                Enter a class code (e.g. UCS501) and a title, then click{" "}
-                <em>Create Class</em>.
-              </li>
-              <li>
-                After creating, click the class on the left to open the
-                ClassBoard where you can upload resources and manage questions
-                for that class.
-              </li>
-              <li>
-                Edit your profile name if you want a different display name on
-                posts and the leaderboard.
-              </li>
-            </ul>
-          </div>
-        </main>
+          {/* --- MODIFIED: Right (Main) Column --- */}
+          <main className="lg:col-span-2 space-y-6">
+            
+            {/* --- NEW: Recent Announcements Card --- */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bell className="w-5 h-5 text-orange-600" />
+                  Recent Announcements
+                </CardTitle>
+                <CardDescription>
+                  The last 3 announcements you posted across all classes.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {loadingStats ? (
+                  <p className="text-sm text-gray-500">Loading announcements...</p>
+                ) : recentAnnouncements.length === 0 ? (
+                  <p className="text-sm text-gray-500">No announcements found.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {recentAnnouncements.map((ann, index) => (
+                      <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                        <p className="font-medium text-gray-800 truncate">{ann.title}</p>
+                        <p className="text-sm text-gray-600 line-clamp-1">{ann.content}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {ann.postedAt?.toDate().toLocaleDateString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* --- NEW: Recent Questions Card --- */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <MessageSquare className="w-5 h-5 text-orange-600" />
+                  Recent Student Questions
+                </CardTitle>
+                <CardDescription>
+                  The newest questions from students in your classes.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {loadingStats ? (
+                  <p className="text-sm text-gray-500">Loading questions...</p>
+                ) : recentQuestions.length === 0 ? (
+                  <p className="text-sm text-gray-500">No questions found.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {recentQuestions.map((q, index) => (
+                      <div key={index} className="p-3 bg-gray-50 rounded-lg">
+                        <p className="font-medium text-gray-800 line-clamp-1">{q.text}</p>
+                        <p className="text-sm text-gray-500 mt-1">
+                          by {q.authorName || 'Student'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+          </main>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
