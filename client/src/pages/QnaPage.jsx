@@ -1,5 +1,22 @@
 // src/pages/QnaPage.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { useParams } from "react-router-dom";
+import { db } from "../firebase";
+import { auth } from "../firebase";
+import { getDoc } from "firebase/firestore"; // ⬅️ Add this at the top with other Firestore imports
+import {
+  collection,
+  addDoc,
+  getDocs,
+  query,
+  orderBy,
+  serverTimestamp,
+  updateDoc,
+  onSnapshot,
+  doc,
+  increment
+} from "firebase/firestore";
+import { arrayUnion, arrayRemove } from "firebase/firestore";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,10 +31,21 @@ import { motion } from "framer-motion";
 
 export default function QnaPage() {
   // 👤 Simulated current logged-in user
-  const currentUser = "You";
+  const user = auth.currentUser;
+  const currentUser = user
+    ? { uid: user.uid, email: user.email }
+    : { uid: "guest", email: "guest@example.com" };
+    const [currentUserName, setCurrentUserName] = useState("");
+  
+  
+  // Get classId from URL params
+  const { classId } = useParams();
+
 
   // 🧩 Questions data (empty by default)
 const [questions, setQuestions] = useState([]);
+const [replies, setReplies] = useState([]);
+
 
 
   // 🏆 Class points tracker
@@ -38,6 +66,27 @@ const [questions, setQuestions] = useState([]);
 
   const nextQuestionId = () =>
     questions.length ? Math.max(...questions.map((q) => q.id)) + 1 : 1;
+// 🔹 Fetch current user's name from Firestore (users collection)
+useEffect(() => {
+  async function fetchUserName() {
+    try {
+      if (!currentUser?.uid || currentUser.uid === "guest") return;
+
+      const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+      if (userDoc.exists()) {
+        setCurrentUserName(userDoc.data().name);
+      } else {
+        console.warn("User document not found in Firestore.");
+        setCurrentUserName("Unknown User");
+      }
+    } catch (err) {
+      console.error("Error fetching user name:", err);
+      setCurrentUserName("Unknown User");
+    }
+  }
+
+  fetchUserName();
+}, [currentUser?.uid]);
 
   // Upload
   const handleImageUpload = (e) => {
@@ -46,7 +95,7 @@ const [questions, setQuestions] = useState([]);
   };
 
   // ✍️ Post new question
-  const handlePostQuestion = () => {
+  const handlePostQuestion = async () => {
     if (!newTitle.trim() || !newDescription.trim()) {
       alert("Please provide both title and description.");
       return;
@@ -66,7 +115,30 @@ const [questions, setQuestions] = useState([]);
       replies: [],
       createdAt: Date.now(),
     };
-    setQuestions((p) => [q, ...p]);
+    try {
+      const newQ = {
+        title: newTitle,
+        description: newDescription,
+        tags,
+        authorName: currentUserName || "Unknown User",
+        authorId: currentUser.uid,
+        upvotedBy: [],
+        replies: [],
+        createdAt: serverTimestamp(),
+      };
+      
+      
+    
+      await addDoc(collection(db, "classes", classId, "questions"), newQ);
+
+    
+      setNewTitle("");
+      setNewDescription("");
+      setNewTags("");
+      setNewImageFile(null);
+    } catch (error) {
+      console.error("Error posting question:", error);
+    }    
     setNewTitle("");
     setNewDescription("");
     setNewTags("");
@@ -74,89 +146,121 @@ const [questions, setQuestions] = useState([]);
   };
 
   // 🔼 Upvote a question
-  const handleUpvoteQuestion = (q) => {
-    if (q.author === currentUser) {
+  const handleUpvoteQuestion = async (q) => {
+    if (q.authorId === currentUser.uid) {
       alert("You can’t upvote your own question!");
       return;
     }
-    setQuestions((prev) =>
-      prev.map((item) =>
-        item.id === q.id ? { ...item, upvotes: item.upvotes + 1 } : item
-      )
-    );
-    setClassPoints((prev) => ({
-      ...prev,
-      [q.author]: (prev[q.author] || 0) + 10,
-    }));
+  
+    try {
+      const questionRef = doc(db, "classes", classId, "questions", q.id);
+      const hasUpvoted = q.upvotedBy?.includes(currentUser.uid);
+  
+      // Only update Firestore — let onSnapshot handle UI update
+      await updateDoc(questionRef, {
+        upvotedBy: hasUpvoted
+          ? arrayRemove(currentUser.uid)
+          : arrayUnion(currentUser.uid),
+      });
+    } catch (err) {
+      console.error("Error toggling upvote:", err);
+    }
   };
+  
+  
 
-  // 🔼 Upvote a reply (recursive)
-  const addUpvoteToReplies = (replies, targetId) =>
-    replies.map((r) => {
-      if (r.id === targetId) {
-        if (r.author === currentUser) {
-          alert("You can’t upvote your own reply!");
-          return r;
-        }
-        setClassPoints((prev) => ({
-          ...prev,
-          [r.author]: (prev[r.author] || 0) + 10,
-        }));
-        return { ...r, upvotes: r.upvotes + 1 };
-      }
-      if (r.replies?.length) {
-        return { ...r, replies: addUpvoteToReplies(r.replies, targetId) };
-      }
-      return r;
-    });
+  
 
-  const handleUpvoteReply = (replyObj) => {
+  const handleUpvoteReply = async (replyObj, parentPath = []) => {
     if (!selectedQuestion) return;
-    setQuestions((prev) =>
-      prev.map((q) =>
-        q.id === selectedQuestion.id
-          ? { ...q, replies: addUpvoteToReplies(q.replies, replyObj.id) }
-          : q
-      )
-    );
+  
+    if (replyObj.authorId === currentUser.uid) {
+      alert("You can’t upvote your own reply!");
+      return;
+    }
+  
+    try {
+      const replyRef = doc(
+        db,
+        "classes",
+        classId,
+        "questions",
+        selectedQuestion.id,
+        ...parentPath,
+        "replies",
+        replyObj.id
+      );
+  
+      const hasUpvoted = replyObj.upvotedBy?.includes(currentUser.uid);
+  
+      await updateDoc(replyRef, {
+        upvotedBy: hasUpvoted
+          ? arrayRemove(currentUser.uid)
+          : arrayUnion(currentUser.uid),
+      });
+    } catch (err) {
+      console.error("Error updating reply upvote:", err);
+    }
   };
+  
+    
+    
 
-  // 💬 Reply posting
-  const addReplyToReplies = (replies, targetId, newReply) =>
-    replies.map((r) => {
-      if (r.id === targetId) {
-        return { ...r, replies: [...r.replies, newReply] };
-      }
-      return { ...r, replies: addReplyToReplies(r.replies, targetId, newReply) };
-    });
 
-  const handlePostReply = () => {
-    if (!replyText.trim()) return;
-    const newR = {
-      id: Date.now(),
-      author: currentUser,
-      text: replyText.trim(),
-      upvotes: 0,
-      replies: [],
-    };
-    setQuestions((prev) =>
-      prev.map((q) => {
-        if (q.id === selectedQuestion.id) {
-          if (!replyTarget) {
-            return { ...q, replies: [...q.replies, newR] };
-          } else {
-            return {
-              ...q,
-              replies: addReplyToReplies(q.replies, replyTarget.id, newR),
-            };
-          }
+
+    const handlePostReply = async () => {
+      if (!replyText.trim()) return;
+    
+      const newR = {
+        authorName: currentUserName || "Unknown User",
+        authorId: currentUser.uid,
+        text: replyText.trim(),
+        upvotedBy: [],
+        createdAt: serverTimestamp(),
+      };
+      
+      
+    
+      try {
+        // ✅ Decide where to save reply (main thread or nested reply)
+        let replyRef;
+      
+        if (replyTarget?.path) {
+          replyRef = collection(db, ...replyTarget.path, "replies", replyTarget.id, "replies");
+        } else if (replyTarget) {
+          replyRef = collection(
+            db,
+            "classes",
+            classId,
+            "questions",
+            selectedQuestion.id,
+            "replies",
+            replyTarget.id,
+            "replies"
+          );
+        } else {
+          replyRef = collection(
+            db,
+            "classes",
+            classId,
+            "questions",
+            selectedQuestion.id,
+            "replies"
+          );
         }
-        return q;
-      })
-    );
-    setReplyText("");
-    setReplyTarget(null);
-  };
+        
+      
+        await addDoc(replyRef, newR);
+      
+        // ✅ Clear input + target
+        setReplyText("");
+        setReplyTarget(null);
+      } catch (error) {
+        console.error("Error posting reply:", error);
+      }
+      
+    };
+    
 
   // 🔽 Collapse replies
   const toggleCollapse = (replyId) =>
@@ -174,20 +278,39 @@ const [questions, setQuestions] = useState([]);
     const matchesSearch =
       q.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       q.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      q.author.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (q.authorName || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       q.tags.some((t) => t.toLowerCase().includes(searchTerm.toLowerCase()));
+  
     const matchesTags =
       selectedTags.length === 0 ||
       selectedTags.every((tag) => q.tags.includes(tag));
+  
     return matchesSearch && matchesTags;
   });
+  
 
-  const sorted = [...filtered].sort((a, b) =>
-    sortOption === "mostUpvoted" ? b.upvotes - a.upvotes : b.createdAt - a.createdAt
-  );
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortOption === "mostUpvoted") {
+      const bu = b.upvotedBy ? b.upvotedBy.length : 0;
+      const au = a.upvotedBy ? a.upvotedBy.length : 0;
+      return bu - au;
+    }
+    const bt = b.createdAt?.toMillis
+      ? b.createdAt.toMillis()
+      : b.createdAt?.seconds
+      ? b.createdAt.seconds * 1000
+      : 0;
+    const at = a.createdAt?.toMillis
+      ? a.createdAt.toMillis()
+      : a.createdAt?.seconds
+      ? a.createdAt.seconds * 1000
+      : 0;
+    return bt - at;
+  });
+  
 
   // 🧵 Recursive reply renderer
-  const ReplyThread = ({ replies = [], depth = 0 }) => {
+  const ReplyThread = ({ replies = [], depth = 0, path = [] }) => {
     if (!replies.length) return null;
     return (
       <div className="space-y-3">
@@ -197,22 +320,43 @@ const [questions, setQuestions] = useState([]);
               <div className="flex justify-between">
                 <div>
                   <p className="text-sm text-gray-800">{r.text}</p>
-                  <p className="text-xs text-gray-500 mt-1">by {r.author}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+  by{" "}
+  {r.authorId === currentUser.uid
+    ? "You"
+    : r.authorName && r.authorName !== ""
+    ? r.authorName
+    : "Unknown"}
+</p>
+
+
                 </div>
                 <div className="flex flex-col items-center">
-                  <button
-                    onClick={() => handleUpvoteReply(r)}
-                    className="p-1 rounded hover:bg-indigo-50"
-                  >
-                    <ArrowUp className="w-4 h-4 text-indigo-600" />
-                  </button>
-                  <span className="text-xs text-gray-600">{r.upvotes}</span>
+                <motion.div
+  whileTap={{ scale: 1.2 }}
+  transition={{ type: "spring", stiffness: 250 }}
+>
+  <ArrowUp
+    onClick={() => handleUpvoteReply(r,path)}
+    className={`w-4 h-4 cursor-pointer transition-colors duration-200 ${
+      r.upvotedBy?.includes(currentUser.uid)
+        ? "text-indigo-700"
+        : "text-indigo-400 hover:text-indigo-600"
+    }`}
+  />
+</motion.div>
+
+<span className="text-xs text-gray-600 mt-1">
+  {r.upvotedBy ? r.upvotedBy.length : 0}
+</span>
+
+
                 </div>
               </div>
 
               <div className="flex gap-4 mt-2 text-xs text-gray-600">
                 <button
-                  onClick={() => setReplyTarget(r)}
+                  onClick={() => setReplyTarget(r,path)}
                   className="flex items-center gap-1 text-indigo-600 hover:underline"
                 >
                   <ReplyIcon className="w-3 h-3" /> Reply
@@ -240,16 +384,95 @@ const [questions, setQuestions] = useState([]);
             </div>
 
             {!collapsedReplies[r.id] && r.replies?.length > 0 && (
-              <div className="mt-2">
-                <ReplyThread replies={r.replies} depth={depth + 1} />
-              </div>
-            )}
+  <div className="mt-2">
+    <ReplyThread
+      replies={r.replies}
+      depth={depth + 1}
+      path={[...path, "replies", r.id]}  // ✅ Add this line
+    />
+  </div>
+)}
+
           </div>
         ))}
       </div>
     );
   };
+  useEffect(() => {
+    if (!classId) return;
+  
+    const q = query(
+      collection(db, "classes", classId, "questions"),
+      orderBy("createdAt", "desc")
+    );
+  
+    // 🔹 Live listener for questions
+    const unsubscribeQuestions = onSnapshot(q, (snapshot) => {
+      const updatedQuestions = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+        replies: [],
+      }));
+      setQuestions(updatedQuestions);
+    });
+  
+    // ✅ Cleanup placed correctly (outside onSnapshot)
+    return () => unsubscribeQuestions();
+  }, [classId]);
+  
+  
+    // ✅ 2️⃣ New useEffect for real-time replies of the selected question
+    useEffect(() => {
+      if (!selectedQuestion || !classId) return;
+    
+      // Recursive Firestore fetcher (for all nested levels)
+      const fetchRepliesRecursively = async (refPath) => {
+        let snap;
+try {
+  const q = query(collection(db, ...refPath), orderBy("createdAt", "asc"));
+  snap = await getDocs(q);
+} catch {
+  return []; // stops when a subcollection doesn’t exist yet
+}
 
+    
+        const repliesWithChildren = await Promise.all(
+          snap.docs.map(async (doc) => {
+            const data = doc.data();
+            const childPath = [...refPath, doc.id, "replies"];
+            const childReplies = await fetchRepliesRecursively(childPath);
+            return { id: doc.id, ...data, replies: childReplies };
+          })
+        );
+    
+        return repliesWithChildren;
+      };
+    
+      const q = query(
+        collection(db, "classes", classId, "questions", selectedQuestion.id, "replies"),
+        orderBy("createdAt", "asc")
+      );
+    
+      // Real-time top-level listener
+      const unsubscribe = onSnapshot(q, async () => {
+        // 🔹 Re-fetch entire tree on any change
+        const tree = await fetchRepliesRecursively([
+          "classes",
+          classId,
+          "questions",
+          selectedQuestion.id,
+          "replies",
+        ]);
+        setReplies(tree);
+      });
+    
+      return () => unsubscribe();
+    }, [selectedQuestion, classId]);
+    
+    
+    
+    
+  
   // Render
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
@@ -363,18 +586,39 @@ const [questions, setQuestions] = useState([]);
                 </span>
               ))}
             </div>
+            <p className="text-xs text-gray-500 mt-1">
+  by{" "}
+  {q.authorId === currentUser.uid
+    ? "You"
+    : q.authorName && q.authorName !== ""
+    ? q.authorName
+    : "Unknown"}
+</p>
+
           </div>
           <div className="flex flex-col items-center">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleUpvoteQuestion(q);
-              }}
-              className="rounded-md p-1 hover:bg-indigo-50"
-            >
-              <ArrowUp className="w-5 h-5 text-indigo-600" />
-            </button>
-            <span className="text-xs text-gray-600">{q.upvotes}</span>
+          <motion.div
+  whileTap={{ scale: 1.2 }}
+  transition={{ type: "spring", stiffness: 250 }}
+>
+  <ArrowUp
+    onClick={(e) => {
+      e.stopPropagation();
+      handleUpvoteQuestion(q);
+    }}
+    className={`w-5 h-5 cursor-pointer transition-colors duration-200 ${
+      q.upvotedBy?.includes(currentUser.uid)
+        ? "text-indigo-700"
+        : "text-indigo-400 hover:text-indigo-600"
+    }`}
+  />
+</motion.div>
+
+<span className="text-xs text-gray-600 mt-1">
+  {q.upvotedBy ? q.upvotedBy.length : 0}
+</span>
+
+
           </div>
         </div>
       </Card>
@@ -398,21 +642,39 @@ const [questions, setQuestions] = useState([]);
       {/* Expanded question */}
       {selectedQuestion && (
         <div>
-          <Button variant="outline" onClick={() => setSelectedQuestion(null)} className="mb-4">
-            ⬅ Back
-          </Button>
+          <Button
+  variant="outline"
+  onClick={() => {
+    setSelectedQuestion(null);
+    setReplies([]); // ✅ Clear replies when leaving
+  }}
+  className="mb-4"
+>
+  ⬅ Back
+</Button>
+
 
           <Card className="border border-gray-200 shadow-sm">
             <CardHeader>
               <h2 className="text-xl font-semibold text-gray-800">{selectedQuestion.title}</h2>
               <p className="text-gray-600 text-sm">{selectedQuestion.description}</p>
             </CardHeader>
+            <p className="text-xs text-gray-500 mt-1">
+  by{" "}
+  {selectedQuestion.authorId === currentUser.uid
+    ? "You"
+    : selectedQuestion.authorName && selectedQuestion.authorName !== ""
+    ? selectedQuestion.authorName
+    : "Unknown"}
+</p>
+
             <CardContent>
-              <ReplyThread replies={selectedQuestion.replies} />
+            <ReplyThread replies={replies} />
+
               <div className="mt-4 space-y-2">
                 {replyTarget ? (
                   <p className="text-xs text-gray-500">
-                    Replying to <b>{replyTarget.author}</b>
+                    Replying to <b>{replyTarget.authorName || "User"}</b>
                     <button onClick={() => setReplyTarget(null)} className="text-indigo-600 underline ml-2">
                       cancel
                     </button>
